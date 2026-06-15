@@ -123,6 +123,19 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(detailBefore.totals.quotedAmount, 0);
     assert.deepEqual(detailBefore.citations, []);
 
+    const unrelatedRouteResponse = await fetch(`${baseUrl}/api/route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: 'Find creator posts about agent-reach and explain why it matters.',
+        budget: 5000,
+        kinds: ['Article'],
+      }),
+    });
+    const unrelatedRoutePayload = await unrelatedRouteResponse.json();
+    assert.equal(unrelatedRouteResponse.status, 400);
+    assert.match(unrelatedRoutePayload.error, /No eligible creator source matched/u);
+
     const routePayload = await postJson('/api/route', {
       question: 'How do Arc agents pay creators for citation licensing?',
       budget: 5000,

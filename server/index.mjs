@@ -1135,24 +1135,88 @@ function validateWalletConfig(input) {
   return { value: { agentWallet, network } };
 }
 
+const routeStopWords = new Set([
+  'the',
+  'and',
+  'for',
+  'from',
+  'with',
+  'about',
+  'into',
+  'that',
+  'this',
+  'they',
+  'what',
+  'when',
+  'where',
+  'which',
+  'why',
+  'how',
+  'find',
+  'tell',
+  'give',
+  'show',
+  'explain',
+  'summarize',
+  'summary',
+  'source',
+  'sources',
+  'creator',
+  'creators',
+  'post',
+  'posts',
+  'article',
+  'articles',
+  'transcript',
+  'transcripts',
+  'research',
+  'request',
+  'answer',
+  'matters',
+  'thing',
+  'things',
+]);
+
 function tokenize(text) {
-  return new Set(
-    String(text)
-      .toLowerCase()
-      .split(/[^a-z0-9]+/u)
-      .filter((token) => token.length > 2),
-  );
+  return String(text)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/u)
+    .filter((token) => token.length > 2 && !routeStopWords.has(token));
 }
 
 function scoreSource(source, questionTokens) {
-  const sourceTokens = tokenize(`${source.title} ${source.content}`);
+  const sourceText = `${source.title} ${source.content}`.toLowerCase();
+  const sourceTokens = new Set(tokenize(sourceText));
+  const uniqueQuestionTokens = [...new Set(questionTokens)];
   let overlap = 0;
+  let strongOverlap = 0;
 
-  for (const token of questionTokens) {
-    if (sourceTokens.has(token)) overlap += 1;
+  for (const token of uniqueQuestionTokens) {
+    if (sourceTokens.has(token)) {
+      overlap += 1;
+      if (token.length >= 5) strongOverlap += 1;
+    }
   }
 
-  return overlap / Math.max(questionTokens.size, 1);
+  const tokenScore = overlap / Math.max(uniqueQuestionTokens.length, 1);
+  const phraseScore = buildSearchPhrases(uniqueQuestionTokens).some((phrase) =>
+    sourceText.includes(phrase),
+  )
+    ? 0.35
+    : 0;
+
+  if (overlap === 0) return 0;
+  if (uniqueQuestionTokens.length > 1 && strongOverlap === 0 && phraseScore === 0) return 0;
+
+  return tokenScore + phraseScore;
+}
+
+function buildSearchPhrases(tokens) {
+  const phrases = [];
+  for (let index = 0; index < tokens.length - 1; index += 1) {
+    phrases.push(`${tokens[index]} ${tokens[index + 1]}`);
+  }
+  return phrases;
 }
 
 function buildReceipt(runId) {
@@ -1362,13 +1426,19 @@ function routeSources({ question, budget, kinds }) {
   let totalSpend = 0;
   const selected = [];
   const questionTokens = tokenize(normalizedQuestion);
+  if (questionTokens.length === 0) {
+    return {
+      error:
+        'Add specific names, topics, or keywords so SourcePay can match the request to creator sources.',
+    };
+  }
   const eligible = statements.eligibleSources
     .all(JSON.stringify(normalizedKinds))
     .map((source) => ({
       ...source,
       relevance: scoreSource(source, questionTokens),
     }))
-    .filter((source) => source.relevance > 0)
+    .filter((source) => source.relevance >= 0.25)
     .sort((left, right) => {
       if (right.relevance !== left.relevance) return right.relevance - left.relevance;
       return left.price - right.price;
