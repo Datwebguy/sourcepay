@@ -648,7 +648,7 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
       <div className="absolute right-4 top-6 z-[60] hidden items-center gap-4 text-xs font-semibold uppercase tracking-[0.14em] text-white/90 sm:flex">
         <span>Arc</span>
         <span>USDC</span>
-        <span>USDC</span>
+        <span>x402</span>
       </div>
 
       <div className="absolute inset-0 z-[3]">
@@ -967,35 +967,54 @@ function PlatformPage({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white"
-          >
-            <ArrowLeft size={17} strokeWidth={2.25} />
-            Landing
-          </button>
-          <button
-            type="button"
-            onClick={connectWalletFromPage}
-            disabled={isConnectingWallet}
-            className="hidden items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white sm:flex"
-          >
-            <Wallet size={16} strokeWidth={2.25} />
-            {isConnectingWallet
-              ? 'Connecting'
-              : connectedWallet.address
-                ? maskAddress(connectedWallet.address)
-                : 'Connect wallet'}
-          </button>
-          <button
-            type="button"
-            onClick={onOpenCreator}
-            className="hidden items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white sm:flex"
-          >
-            Creator portal
-            <ExternalLink size={16} strokeWidth={2.25} />
-          </button>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={onBack}
+              className="flex items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white"
+            >
+              <ArrowLeft size={17} strokeWidth={2.25} />
+              Landing
+            </button>
+            {connectedWallet.address ? (
+              <div className="hidden items-center gap-2 sm:flex">
+                <button
+                  type="button"
+                  onClick={disconnectWalletFromPage}
+                  className="flex items-center gap-2 rounded-full border border-[#F4845F]/35 px-4 py-2 text-sm font-bold text-[#F7B49D] transition hover:border-[#F4845F]/65 hover:text-white"
+                >
+                  <Wallet size={16} strokeWidth={2.25} />
+                  Disconnect {maskAddress(connectedWallet.address)}
+                </button>
+                <button
+                  type="button"
+                  onClick={connectWalletFromPage}
+                  disabled={isConnectingWallet}
+                  className="rounded-full border border-white/14 px-3 py-2 text-xs font-extrabold uppercase tracking-[0.12em] text-white/58 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  Change
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={connectWalletFromPage}
+                disabled={isConnectingWallet}
+                className="hidden items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-45 sm:flex"
+              >
+                <Wallet size={16} strokeWidth={2.25} />
+                {isConnectingWallet ? 'Connecting' : 'Connect wallet'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onOpenCreator}
+              className="hidden items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white lg:flex"
+            >
+              Creator portal
+              <ExternalLink size={16} strokeWidth={2.25} />
+            </button>
+          </div>
         </header>
 
         <div className="grid lg:grid-cols-[220px_minmax(0,1fr)]">
