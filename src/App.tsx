@@ -531,9 +531,12 @@ function paymentStateCopy(status: string) {
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
   try {
     response = await fetch(path, {
       ...init,
+      signal: init?.signal ?? controller.signal,
       headers: {
         'Content-Type': 'application/json',
         ...init?.headers,
@@ -541,6 +544,8 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     });
   } catch {
     throw new Error('SourcePay could not reach the API. Please refresh and try again.');
+  } finally {
+    window.clearTimeout(timeoutId);
   }
   const payload = await response.json();
 
@@ -556,9 +561,12 @@ async function requestJsonWithStatus<T>(
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; payload: T }> {
   let response: Response;
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 15_000);
   try {
     response = await fetch(path, {
       ...init,
+      signal: init?.signal ?? controller.signal,
       headers: {
         'Content-Type': 'application/json',
         ...init?.headers,
@@ -566,6 +574,8 @@ async function requestJsonWithStatus<T>(
     });
   } catch {
     throw new Error('SourcePay could not reach the API. Please refresh and try again.');
+  } finally {
+    window.clearTimeout(timeoutId);
   }
   const payload = (await response.json()) as T;
   return { ok: response.ok, status: response.status, payload };
@@ -3017,6 +3027,11 @@ function ReceiptPage({
 
   useEffect(() => {
     let ignore = false;
+    const timeoutId = window.setTimeout(() => {
+      if (!ignore) {
+        setLoadError('Receipt is taking too long to load. Refresh the page or return to Requests and open the latest receipt.');
+      }
+    }, 18_000);
     setReceipt(null);
     setLoadError('');
     setPaymentNotice('');
@@ -3025,14 +3040,21 @@ function ReceiptPage({
 
     requestJson<{ receipt: Receipt }>(`/api/receipts/${id}`)
       .then((payload) => {
-        if (!ignore) setReceipt(payload.receipt);
+        if (!ignore) {
+          window.clearTimeout(timeoutId);
+          setReceipt(payload.receipt);
+        }
       })
       .catch((requestError: Error) => {
-        if (!ignore) setLoadError(requestError.message);
+        if (!ignore) {
+          window.clearTimeout(timeoutId);
+          setLoadError(requestError.message);
+        }
       });
 
     return () => {
       ignore = true;
+      window.clearTimeout(timeoutId);
     };
   }, [id]);
 
@@ -3194,8 +3216,24 @@ function ReceiptPage({
 
         {loadError ? (
           <div className="p-5">
-            <div className="rounded-[8px] border border-[#F4845F]/35 bg-[#F4845F]/12 p-4 text-sm font-semibold text-[#F7B49D]">
-              {loadError}
+            <div className="rounded-[8px] border border-[#F4845F]/35 bg-[#F4845F]/12 p-4">
+              <p className="text-sm font-semibold text-[#F7B49D]">{loadError}</p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="rounded-[8px] bg-white px-4 py-2 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF]"
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={onBack}
+                  className="rounded-[8px] border border-white/14 px-4 py-2 text-xs font-extrabold uppercase tracking-[0.12em] text-white/72 transition hover:border-white/40 hover:text-white"
+                >
+                  Requests
+                </button>
+              </div>
             </div>
           </div>
         ) : !receipt ? (

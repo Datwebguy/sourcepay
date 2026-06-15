@@ -403,6 +403,7 @@ statements.deleteEmptyRuns.run();
 function sendJson(response, status, body) {
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
@@ -413,14 +414,17 @@ function sendJson(response, status, body) {
 function sendHtml(response, status, body) {
   response.writeHead(status, {
     'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
     'Access-Control-Allow-Origin': '*',
   });
   response.end(body);
 }
 
 async function sendFile(response, status, filePath) {
+  const isAppShell = filePath === distIndexPath || filePath.endsWith(`${pathSeparator()}index.html`);
   response.writeHead(status, {
     'Content-Type': contentTypeForPath(filePath),
+    'Cache-Control': isAppShell ? 'no-store' : 'public, max-age=31536000, immutable',
   });
   response.end(await readFile(filePath));
 }
