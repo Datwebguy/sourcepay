@@ -236,8 +236,8 @@ const statements = {
     FROM sources
     WHERE kind IN (SELECT value FROM json_each(?))
       AND status = 'registered'
-      AND owner_wallet IS NOT NULL
-      AND ownership_signature IS NOT NULL
+      AND NULLIF(TRIM(owner_wallet), '') IS NOT NULL
+      AND NULLIF(TRIM(ownership_signature), '') IS NOT NULL
     ORDER BY datetime(created_at) ASC
   `),
   insertRun: db.prepare(`
