@@ -857,7 +857,7 @@ function PlatformPage({
   isConnectingWallet,
 }: {
   onBack: () => void;
-  onOpenReceipt: (id: string) => void;
+  onOpenReceipt: (id: string, receipt?: Receipt) => void;
   onOpenCreator: () => void;
   onOpenSource: (id: string) => void;
   connectedWallet: ConnectedWallet;
@@ -1428,7 +1428,7 @@ function PlatformPage({
                       </div>
                       <button
                         type="button"
-                        onClick={() => receipt && onOpenReceipt(receipt.id)}
+                        onClick={() => receipt && onOpenReceipt(receipt.id, receipt)}
                         disabled={!receipt}
                         className="mt-4 w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
                       >
@@ -1626,7 +1626,7 @@ function PlatformPage({
                       <button
                         key={item.id}
                         type="button"
-                        onClick={() => onOpenReceipt(item.id)}
+                        onClick={() => onOpenReceipt(item.id, item)}
                         className="grid w-full gap-3 px-4 py-3 text-left transition hover:bg-white/[0.035] sm:grid-cols-[1fr_120px_120px_auto] sm:items-center"
                       >
                         <div>
@@ -2811,7 +2811,7 @@ function SourcePage({
 }: {
   id: string;
   onBack: () => void;
-  onOpenReceipt: (id: string) => void;
+  onOpenReceipt: (id: string, receipt?: Receipt) => void;
 }) {
   const [detail, setDetail] = useState<SourceDetail | null>(null);
   const [error, setError] = useState('');
@@ -3006,18 +3006,20 @@ function SourcePage({
 
 function ReceiptPage({
   id,
+  initialReceipt,
   onBack,
   connectedWallet,
   onConnectWallet,
   isConnectingWallet,
 }: {
   id: string;
+  initialReceipt: Receipt | null;
   onBack: () => void;
   connectedWallet: ConnectedWallet;
   onConnectWallet: () => Promise<string | null>;
   isConnectingWallet: boolean;
 }) {
-  const [receipt, setReceipt] = useState<Receipt | null>(null);
+  const [receipt, setReceipt] = useState<Receipt | null>(initialReceipt);
   const [loadError, setLoadError] = useState('');
   const [paymentNotice, setPaymentNotice] = useState('');
   const [receiptNotice, setReceiptNotice] = useState('');
@@ -3028,11 +3030,11 @@ function ReceiptPage({
   useEffect(() => {
     let ignore = false;
     const timeoutId = window.setTimeout(() => {
-      if (!ignore) {
+      if (!ignore && !initialReceipt) {
         setLoadError('Receipt is taking too long to load. Refresh the page or return to Requests and open the latest receipt.');
       }
     }, 18_000);
-    setReceipt(null);
+    setReceipt(initialReceipt);
     setLoadError('');
     setPaymentNotice('');
     setReceiptNotice('');
@@ -3048,7 +3050,11 @@ function ReceiptPage({
       .catch((requestError: Error) => {
         if (!ignore) {
           window.clearTimeout(timeoutId);
-          setLoadError(requestError.message);
+          if (!initialReceipt) {
+            setLoadError(requestError.message);
+          } else {
+            setReceiptNotice(requestError.message);
+          }
         }
       });
 
@@ -3056,7 +3062,7 @@ function ReceiptPage({
       ignore = true;
       window.clearTimeout(timeoutId);
     };
-  }, [id]);
+  }, [id, initialReceipt]);
 
   const attemptPayment = async () => {
     setIsPaying(true);
@@ -3487,6 +3493,7 @@ function App() {
           : 'landing';
   const [view, setView] = useState<AppView>(initialView);
   const [receiptId, setReceiptId] = useState(initialReceiptId ?? '');
+  const [activeReceipt, setActiveReceipt] = useState<Receipt | null>(null);
   const [sourceId, setSourceId] = useState(initialSourceId ?? '');
   const [connectedWallet, setConnectedWallet] = useState<ConnectedWallet>({
     address: null,
@@ -3550,9 +3557,10 @@ function App() {
     setConnectedWallet({ address: null });
   };
 
-  const navigate = (nextView: AppView, nextId = '') => {
+  const navigate = (nextView: AppView, nextId = '', nextReceipt: Receipt | null = null) => {
     setView(nextView);
     setReceiptId(nextView === 'receipt' ? nextId : '');
+    setActiveReceipt(nextView === 'receipt' ? nextReceipt : null);
     setSourceId(nextView === 'source' ? nextId : '');
 
     if (nextView === 'receipt' && nextId) {
@@ -3581,7 +3589,7 @@ function App() {
           <PlatformPage
             onBack={() => navigate('landing')}
             onOpenCreator={() => navigate('creator')}
-            onOpenReceipt={(id) => navigate('receipt', id)}
+            onOpenReceipt={(id, nextReceipt) => navigate('receipt', id, nextReceipt ?? null)}
             onOpenSource={(id) => navigate('source', id)}
             connectedWallet={connectedWallet}
             onConnectWallet={connectWallet}
@@ -3601,11 +3609,12 @@ function App() {
           <SourcePage
             id={sourceId}
             onBack={() => navigate('platform')}
-            onOpenReceipt={(id) => navigate('receipt', id)}
+            onOpenReceipt={(id, nextReceipt) => navigate('receipt', id, nextReceipt ?? null)}
           />
         ) : (
           <ReceiptPage
             id={receiptId}
+            initialReceipt={activeReceipt}
             onBack={() => navigate('platform')}
             connectedWallet={connectedWallet}
             onConnectWallet={connectWallet}
