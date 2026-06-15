@@ -271,6 +271,21 @@ const statements = {
     FROM research_runs
     WHERE id = ?
   `),
+  getRunByPrefix: db.prepare(`
+    SELECT
+      id,
+      question,
+      budget,
+      total_spend AS totalSpend,
+      status,
+      payment_status AS paymentStatus,
+      rail,
+      network,
+      created_at AS createdAt
+    FROM research_runs
+    WHERE id LIKE ? || '%'
+    ORDER BY datetime(created_at) DESC
+  `),
   getRunSources: db.prepare(`
     SELECT
       COALESCE(s.id, ss.source_id) AS id,
@@ -1125,6 +1140,21 @@ function normalizeRun(row) {
   };
 }
 
+function findRun(identifier) {
+  const id = String(identifier ?? '').trim();
+  if (!id) return null;
+
+  const exact = statements.getRun.get(id);
+  if (exact) return exact;
+
+  if (/^[a-f0-9]{8,35}$/iu.test(id)) {
+    const matches = statements.getRunByPrefix.all(id);
+    if (matches.length === 1) return matches[0];
+  }
+
+  return null;
+}
+
 function validateWalletConfig(input) {
   const agentWallet = String(input.agentWallet ?? '').trim();
   const network = String(input.network ?? 'Arc').trim() || 'Arc';
@@ -1222,7 +1252,7 @@ function buildSearchPhrases(tokens) {
 }
 
 function buildReceipt(runId) {
-  const run = statements.getRun.get(runId);
+  const run = findRun(runId);
   if (!run) return null;
   const normalizedRun = normalizeRun(run);
 

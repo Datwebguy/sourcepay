@@ -3017,6 +3017,11 @@ function ReceiptPage({
 
   useEffect(() => {
     let ignore = false;
+    setReceipt(null);
+    setLoadError('');
+    setPaymentNotice('');
+    setReceiptNotice('');
+    setVerificationNotice('');
 
     requestJson<{ receipt: Receipt }>(`/api/receipts/${id}`)
       .then((payload) => {

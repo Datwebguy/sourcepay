@@ -145,6 +145,11 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(routePayload.receipt.sources.length, 1);
     assert.equal(routePayload.receipt.sources[0].id, sourcePayload.source.id);
 
+    const shortReceiptPayload = await getJson(
+      `/api/receipts/${routePayload.receipt.id.slice(0, 8)}`,
+    );
+    assert.equal(shortReceiptPayload.receipt.id, routePayload.receipt.id);
+
     const detailAfter = await getJson(`/api/sources/${sourcePayload.source.id}`);
     assert.equal(detailAfter.totals.citations, 1);
     assert.equal(detailAfter.totals.receipts, 1);
