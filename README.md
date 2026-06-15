@@ -127,3 +127,41 @@ ARC_RPC_URL=
 npm run build
 npm test
 ```
+
+## Deploy On Fly.io
+
+SourcePay can run as one Fly app: the Node server serves the API and the built Vite frontend from `dist/`.
+
+1. Install and sign in with `flyctl`.
+2. Create the app, or change the `app` name in `fly.toml` if `sourcepay` is taken:
+
+```bash
+fly apps create sourcepay
+```
+
+3. Create the persistent SQLite volume in the same region as `primary_region`:
+
+```bash
+fly volumes create sourcepay_data --size 1 --region iad
+```
+
+4. Set the Arc RPC endpoint:
+
+```bash
+fly secrets set ARC_RPC_URL="https://..."
+```
+
+5. Deploy:
+
+```bash
+fly deploy
+```
+
+6. Check the deployed service:
+
+```bash
+fly status
+fly logs
+```
+
+The Fly config mounts `/data` and stores SQLite at `/data/sourcepay.sqlite`, so source registrations, receipts, and payment attempts survive deploys and restarts.

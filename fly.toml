@@ -1,0 +1,29 @@
+app = "sourcepay"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  HOST = "0.0.0.0"
+  PORT = "8080"
+  SOURCEPAY_DB_PATH = "/data/sourcepay.sqlite"
+  SOURCEPAY_NETWORK = "Arc"
+
+[[mounts]]
+  source = "sourcepay_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"

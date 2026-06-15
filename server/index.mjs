@@ -1,8 +1,9 @@
 import { createServer } from 'node:http';
 import { lookup } from 'node:dns/promises';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
-import { dirname, join } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
@@ -21,6 +22,8 @@ loadEnv();
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const dataDir = join(__dirname, '..', 'data');
+const distDir = join(__dirname, '..', 'dist');
+const distIndexPath = join(distDir, 'index.html');
 mkdirSync(dataDir, { recursive: true });
 
 const dbPath = process.env.SOURCEPAY_DB_PATH ?? join(dataDir, 'sourcepay.sqlite');
@@ -395,6 +398,59 @@ function sendHtml(response, status, body) {
     'Access-Control-Allow-Origin': '*',
   });
   response.end(body);
+}
+
+async function sendFile(response, status, filePath) {
+  response.writeHead(status, {
+    'Content-Type': contentTypeForPath(filePath),
+  });
+  response.end(await readFile(filePath));
+}
+
+function contentTypeForPath(filePath) {
+  const extension = extname(filePath).toLowerCase();
+  const types = {
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.ico': 'image/x-icon',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.txt': 'text/plain; charset=utf-8',
+    '.webp': 'image/webp',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+  };
+
+  return types[extension] ?? 'application/octet-stream';
+}
+
+async function serveFrontend(url, response) {
+  if (!existsSync(distIndexPath)) return false;
+  if (url.pathname === '/health' || url.pathname.startsWith('/api/')) return false;
+
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    await sendFile(response, 200, distIndexPath);
+    return true;
+  }
+
+  const filePath = resolve(distDir, `.${pathname}`);
+  const isInsideDist = filePath === distDir || filePath.startsWith(`${distDir}${pathSeparator()}`);
+  if (isInsideDist && existsSync(filePath) && statSync(filePath).isFile()) {
+    await sendFile(response, 200, filePath);
+    return true;
+  }
+
+  await sendFile(response, 200, distIndexPath);
+  return true;
+}
+
+function pathSeparator() {
+  return process.platform === 'win32' ? '\\' : '/';
 }
 
 function renderBackendHome({ sourceCount, wallet, payment }) {
@@ -1276,6 +1332,10 @@ async function handleRequest(request, response) {
   }
 
   try {
+    if (request.method === 'GET' && (await serveFrontend(url, response))) {
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/') {
       const wallet = normalizeWalletConfig(statements.getWalletConfig.get());
       const payment = getPaymentReadiness(wallet);
@@ -1632,6 +1692,7 @@ async function handleRequest(request, response) {
 }
 
 const port = Number(process.env.PORT ?? 8787);
-createServer(handleRequest).listen(port, '127.0.0.1', () => {
-  process.stdout.write(`SourcePay service listening on http://127.0.0.1:${port}\n`);
+const host = process.env.HOST ?? '127.0.0.1';
+createServer(handleRequest).listen(port, host, () => {
+  process.stdout.write(`SourcePay service listening on http://${host}:${port}\n`);
 });
