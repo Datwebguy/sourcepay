@@ -40,10 +40,9 @@ PORT=8787
 SOURCEPAY_DB_PATH=./data/sourcepay.sqlite
 SOURCEPAY_NETWORK=Arc
 ARC_RPC_URL=
-CIRCLE_GATEWAY_URL=
 ```
 
-`ARC_RPC_URL` should point to the Arc RPC endpoint used for the event. `CIRCLE_GATEWAY_URL` is optional; the app defaults to Circle Gateway testnet behavior.
+`ARC_RPC_URL` should point to the Arc RPC endpoint used for the event.
 
 ## Main Flow
 
