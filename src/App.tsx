@@ -341,6 +341,21 @@ function getEthereumProvider() {
   return typeof window !== 'undefined' ? window.ethereum : undefined;
 }
 
+function useSmallViewport() {
+  const [isSmallViewport, setIsSmallViewport] = useState(() =>
+    typeof window !== 'undefined' ? window.innerWidth < 640 : false,
+  );
+
+  useEffect(() => {
+    const update = () => setIsSmallViewport(window.innerWidth < 640);
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+
+  return isSmallViewport;
+}
+
 function shortFingerprint(value: string | undefined) {
   if (!value) return 'unverified';
   return `${value.slice(0, 10)}...${value.slice(-6)}`;
@@ -590,6 +605,7 @@ function SourcePayMark({ className = 'h-9 w-9' }: { className?: string }) {
 function LandingPage({ onLaunch }: { onLaunch: () => void }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
+  const isSmallViewport = useSmallViewport();
   const activeSource = HERO_SOURCES[activeIndex];
   const roles = {
     center: activeIndex,
@@ -612,7 +628,7 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
 
   return (
     <section
-      className="relative h-screen w-full overflow-hidden"
+      className="relative min-h-[100svh] w-full overflow-x-hidden overflow-y-auto"
       style={{
         backgroundColor: activeSource.bg,
         transition: 'background-color 650ms cubic-bezier(0.4,0,0.2,1)',
@@ -622,7 +638,9 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
 
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute inset-x-0 flex select-none items-center justify-center"
+        className={`pointer-events-none absolute inset-x-0 select-none items-center justify-center ${
+          isSmallViewport ? 'hidden' : 'flex'
+        }`}
         style={{ zIndex: 2, top: '18%' }}
       >
         <p
@@ -670,12 +688,36 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
               aria-hidden={!isCenter}
               className="absolute"
               style={{
-                left: role === 'left' ? '30%' : role === 'right' ? '70%' : '50%',
-                bottom: isCenter ? '8%' : '12%',
-                height: isCenter ? '58%' : isSide ? '28%' : '22%',
-                opacity: isCenter ? 1 : isSide ? 0.85 : 0.95,
+                left: isSmallViewport
+                  ? '50%'
+                  : role === 'left'
+                    ? '30%'
+                    : role === 'right'
+                      ? '70%'
+                      : '50%',
+                bottom: isSmallViewport ? '18%' : isCenter ? '8%' : '12%',
+                height: isSmallViewport
+                  ? isCenter
+                    ? '46%'
+                    : '22%'
+                  : isCenter
+                    ? '58%'
+                    : isSide
+                      ? '28%'
+                      : '22%',
+                opacity: isSmallViewport
+                  ? isCenter
+                    ? 1
+                    : 0
+                  : isCenter
+                    ? 1
+                    : isSide
+                      ? 0.85
+                      : 0.95,
                 zIndex: isCenter ? 20 : isSide ? 10 : 5,
-                transform: `translateX(-50%) scale(${isCenter ? 1.22 : 1})`,
+                transform: `translateX(-50%) scale(${
+                  isSmallViewport ? (isCenter ? 1 : 0.9) : isCenter ? 1.22 : 1
+                })`,
                 filter: isCenter ? 'blur(0)' : isSide ? 'blur(2px)' : 'blur(4px)',
                 transition:
                   'transform 650ms cubic-bezier(0.4,0,0.2,1), filter 650ms cubic-bezier(0.4,0,0.2,1), opacity 650ms cubic-bezier(0.4,0,0.2,1), left 650ms cubic-bezier(0.4,0,0.2,1), bottom 650ms cubic-bezier(0.4,0,0.2,1), height 650ms cubic-bezier(0.4,0,0.2,1)',
@@ -689,7 +731,7 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
         })}
       </div>
 
-      <div className="absolute bottom-6 left-4 z-[60] max-w-[340px] sm:bottom-20 sm:left-24">
+      <div className="absolute bottom-5 left-4 z-[60] max-w-[220px] sm:bottom-20 sm:left-24 sm:max-w-[340px]">
         <p className="mb-2 text-base font-bold uppercase tracking-normal text-white opacity-95 sm:mb-3 sm:text-[22px]">
           AI citations that pay
         </p>
@@ -720,7 +762,16 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
       <button
         type="button"
         onClick={onLaunch}
-        className="font-display absolute bottom-6 right-4 z-[60] flex items-center gap-2 uppercase text-white opacity-95 transition-opacity duration-200 hover:opacity-100 sm:bottom-20 sm:right-10"
+        className="absolute bottom-6 left-1/2 z-[60] flex -translate-x-1/2 items-center justify-center gap-2 whitespace-nowrap text-center text-xl font-semibold uppercase leading-none text-white opacity-95 transition-opacity duration-200 hover:opacity-100 sm:hidden"
+      >
+        Launch
+        <ArrowRight className="h-5 w-5 shrink-0" strokeWidth={2.25} />
+      </button>
+
+      <button
+        type="button"
+        onClick={onLaunch}
+        className="font-display absolute bottom-20 right-10 z-[60] hidden items-center justify-end gap-2 whitespace-nowrap text-right uppercase text-white opacity-95 transition-opacity duration-200 hover:opacity-100 sm:flex"
         style={{
           fontSize: 'clamp(20px, 4vw, 56px)',
           fontWeight: 400,
@@ -728,7 +779,7 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
         }}
       >
         Launch SourcePay
-        <ArrowRight className="h-5 w-5 sm:h-8 sm:w-8" strokeWidth={2.25} />
+        <ArrowRight className="h-8 w-8 shrink-0" strokeWidth={2.25} />
       </button>
     </section>
   );
@@ -955,11 +1006,11 @@ function PlatformPage({
           'radial-gradient(circle at 14% 10%, rgba(95,169,255,0.28), transparent 30%), radial-gradient(circle at 84% 8%, rgba(244,132,95,0.2), transparent 28%), radial-gradient(circle at 55% 95%, rgba(95,191,122,0.1), transparent 30%), linear-gradient(135deg, #071018 0%, #0d0f12 44%, #17100e 100%)',
       }}
     >
-      <div className="mx-auto flex w-full max-w-[1500px] flex-col overflow-hidden rounded-[8px] border border-white/12 bg-[#0b0e11]/88 shadow-2xl shadow-black/45 backdrop-blur-xl">
-        <header className="flex min-h-16 items-center justify-between gap-4 border-b border-white/10 bg-white/[0.025] px-4 sm:px-5">
-          <div className="flex items-center gap-3">
+      <div className="mx-auto flex w-full max-w-[1500px] flex-col overflow-x-auto rounded-[8px] border border-white/12 bg-[#0b0e11]/88 shadow-2xl shadow-black/45 backdrop-blur-xl">
+        <header className="flex min-h-16 flex-col items-stretch justify-between gap-3 border-b border-white/10 bg-white/[0.025] px-4 py-3 sm:flex-row sm:items-center sm:px-5">
+          <div className="flex min-w-0 items-center gap-3">
             <SourcePayMark />
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-bold">SourcePay</p>
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/42">
                 agent payment router
@@ -967,40 +1018,30 @@ function PlatformPage({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
             <button
               type="button"
               onClick={onBack}
-              className="flex items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white"
+              className="flex min-h-10 items-center gap-2 rounded-full border border-white/14 px-3 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white sm:px-4"
             >
               <ArrowLeft size={17} strokeWidth={2.25} />
               Landing
             </button>
             {connectedWallet.address ? (
-              <div className="hidden items-center gap-2 sm:flex">
-                <button
-                  type="button"
-                  onClick={disconnectWalletFromPage}
-                  className="flex items-center gap-2 rounded-full border border-[#F4845F]/35 px-4 py-2 text-sm font-bold text-[#F7B49D] transition hover:border-[#F4845F]/65 hover:text-white"
-                >
-                  <Wallet size={16} strokeWidth={2.25} />
-                  Disconnect {maskAddress(connectedWallet.address)}
-                </button>
-                <button
-                  type="button"
-                  onClick={connectWalletFromPage}
-                  disabled={isConnectingWallet}
-                  className="rounded-full border border-white/14 px-3 py-2 text-xs font-extrabold uppercase tracking-[0.12em] text-white/58 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  Change
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={disconnectWalletFromPage}
+                className="flex min-h-10 items-center gap-2 rounded-full border border-[#F4845F]/35 px-3 py-2 text-sm font-bold text-[#F7B49D] transition hover:border-[#F4845F]/65 hover:text-white sm:px-4"
+              >
+                <Wallet size={16} strokeWidth={2.25} />
+                Disconnect {maskAddress(connectedWallet.address)}
+              </button>
             ) : (
               <button
                 type="button"
                 onClick={connectWalletFromPage}
                 disabled={isConnectingWallet}
-                className="hidden items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-45 sm:flex"
+                className="flex min-h-10 items-center gap-2 rounded-full border border-white/14 px-3 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-45 sm:px-4"
               >
                 <Wallet size={16} strokeWidth={2.25} />
                 {isConnectingWallet ? 'Connecting' : 'Connect wallet'}
@@ -1009,7 +1050,7 @@ function PlatformPage({
             <button
               type="button"
               onClick={onOpenCreator}
-              className="hidden items-center gap-2 rounded-full border border-white/14 px-4 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white lg:flex"
+              className="flex min-h-10 items-center gap-2 rounded-full border border-white/14 px-3 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white sm:px-4"
             >
               Creator portal
               <ExternalLink size={16} strokeWidth={2.25} />
@@ -1017,9 +1058,9 @@ function PlatformPage({
           </div>
         </header>
 
-        <div className="grid lg:grid-cols-[220px_minmax(0,1fr)]">
+        <div className="grid min-w-0 lg:grid-cols-[220px_minmax(0,1fr)]">
           <aside className="border-b border-white/10 bg-black/10 p-3 lg:border-b-0 lg:border-r lg:p-4">
-            <nav className="grid gap-1">
+            <nav className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-1">
               {[
                 { label: 'Requests', icon: Activity },
                 { label: 'Sources', icon: Database },
@@ -1647,23 +1688,21 @@ function PlatformPage({
                   </div>
                   <div className="space-y-3 p-4">
                     <div className="grid gap-2 sm:grid-cols-2">
-                      <button
-                        type="button"
-                        onClick={connectWalletFromPage}
-                        disabled={isConnectingWallet}
-                        className="rounded-[8px] bg-white px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF]"
-                      >
-                        {isConnectingWallet
-                          ? 'Connecting'
-                          : connectedWallet.address
-                            ? 'Change wallet'
-                            : 'Connect wallet'}
-                      </button>
+                      {!connectedWallet.address && (
+                        <button
+                          type="button"
+                          onClick={connectWalletFromPage}
+                          disabled={isConnectingWallet}
+                          className="rounded-[8px] bg-white px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-45 sm:col-span-2"
+                        >
+                          {isConnectingWallet ? 'Connecting' : 'Connect wallet'}
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={disconnectWalletFromPage}
                         disabled={!connectedWallet.address}
-                        className="rounded-[8px] border border-white/12 px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-white/62 transition hover:border-white/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
+                        className="rounded-[8px] border border-white/12 px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-white/62 transition hover:border-[#F4845F]/45 hover:text-[#F7B49D] disabled:cursor-not-allowed disabled:opacity-35 sm:col-span-2"
                       >
                         Disconnect
                       </button>
@@ -2118,8 +2157,8 @@ function CreatorPage({
           'radial-gradient(circle at 12% 12%, rgba(95,169,255,0.24), transparent 31%), radial-gradient(circle at 88% 10%, rgba(95,191,122,0.18), transparent 26%), radial-gradient(circle at 78% 86%, rgba(244,132,95,0.16), transparent 28%), linear-gradient(135deg, #071018 0%, #0f1112 45%, #17100e 100%)',
       }}
     >
-      <div className="mx-auto flex w-full max-w-[1280px] flex-col overflow-hidden rounded-[8px] border border-white/12 bg-[#0b0e11]/88 shadow-2xl shadow-black/45 backdrop-blur-xl">
-        <header className="flex min-h-16 items-center justify-between gap-4 border-b border-white/10 bg-white/[0.025] px-4 sm:px-5">
+      <div className="mx-auto flex w-full max-w-[1280px] flex-col overflow-x-auto rounded-[8px] border border-white/12 bg-[#0b0e11]/88 shadow-2xl shadow-black/45 backdrop-blur-xl">
+        <header className="flex min-h-16 flex-col items-stretch justify-between gap-3 border-b border-white/10 bg-white/[0.025] px-4 py-3 sm:flex-row sm:items-center sm:px-5">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-white/5">
               <Database size={20} strokeWidth={2.25} />
@@ -2627,8 +2666,8 @@ function SourcePage({
           'radial-gradient(circle at 12% 12%, rgba(95,169,255,0.24), transparent 31%), radial-gradient(circle at 86% 16%, rgba(244,132,95,0.18), transparent 28%), linear-gradient(135deg, #071018 0%, #0f1112 46%, #17100e 100%)',
       }}
     >
-      <div className="mx-auto flex w-full max-w-[1180px] flex-col overflow-hidden rounded-[8px] border border-white/12 bg-[#0b0e11]/88 shadow-2xl shadow-black/45 backdrop-blur-xl">
-        <header className="flex min-h-16 items-center justify-between gap-4 border-b border-white/10 bg-white/[0.025] px-4 sm:px-5">
+      <div className="mx-auto flex w-full max-w-[1180px] flex-col overflow-x-auto rounded-[8px] border border-white/12 bg-[#0b0e11]/88 shadow-2xl shadow-black/45 backdrop-blur-xl">
+        <header className="flex min-h-16 flex-col items-stretch justify-between gap-3 border-b border-white/10 bg-white/[0.025] px-4 py-3 sm:flex-row sm:items-center sm:px-5">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-white/5">
               <Icon size={20} strokeWidth={2.25} />
@@ -2951,8 +2990,8 @@ function ReceiptPage({
           'radial-gradient(circle at 16% 12%, rgba(95,169,255,0.24), transparent 30%), radial-gradient(circle at 86% 10%, rgba(244,132,95,0.18), transparent 28%), linear-gradient(135deg, #071018 0%, #0d0f12 48%, #111418 100%)',
       }}
     >
-      <div className="mx-auto w-full max-w-5xl overflow-hidden rounded-[8px] border border-white/12 bg-[#0b0e11]/90 shadow-2xl shadow-black/45 backdrop-blur-xl">
-        <header className="flex min-h-16 items-center justify-between gap-4 border-b border-white/10 bg-white/[0.025] px-4 sm:px-5">
+      <div className="mx-auto w-full max-w-5xl overflow-x-auto rounded-[8px] border border-white/12 bg-[#0b0e11]/90 shadow-2xl shadow-black/45 backdrop-blur-xl">
+        <header className="flex min-h-16 flex-col items-stretch justify-between gap-3 border-b border-white/10 bg-white/[0.025] px-4 py-3 sm:flex-row sm:items-center sm:px-5">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-white/5">
               <ReceiptText size={20} strokeWidth={2.25} />
@@ -3299,7 +3338,7 @@ function App() {
 
   return (
     <AppErrorBoundary>
-      <main className="relative w-full overflow-hidden">
+      <main className="relative w-full overflow-x-hidden">
         {view === 'landing' ? (
           <LandingPage onLaunch={() => navigate('platform')} />
         ) : view === 'platform' ? (
