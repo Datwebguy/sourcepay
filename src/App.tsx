@@ -83,6 +83,11 @@ type Receipt = {
 
 type PaymentRequirement = {
   sourceId: string;
+  requirements: {
+    asset: string;
+    amount: string;
+    payTo: string;
+  };
   typedData: ({ message: Record<string, unknown> } & Record<string, unknown>) | null;
 };
 
@@ -164,6 +169,14 @@ type SourcePreview = {
 
 type ConnectedWallet = {
   address: string | null;
+};
+
+type WalletBalanceCheck = {
+  checking: boolean;
+  balance: bigint | null;
+  required: bigint | null;
+  enough: boolean | null;
+  error: string;
 };
 
 type WalletConfig = {
@@ -344,6 +357,60 @@ function maskAddress(value: string | null | undefined) {
   if (!value) return '';
   if (value.length <= 12) return value;
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function encodeBalanceOf(address: string) {
+  return `0x70a08231${address.toLowerCase().replace(/^0x/u, '').padStart(64, '0')}`;
+}
+
+function formatUsdcAtomic(value: bigint | null) {
+  if (value === null) return '--';
+  const units = value / 1_000_000n;
+  const decimals = value % 1_000_000n;
+  const decimalText = decimals.toString().padStart(6, '0').replace(/0+$/u, '');
+  return decimalText ? `${units}.${decimalText}` : units.toString();
+}
+
+async function readUsdcBalance({
+  provider,
+  receiptId,
+  wallet,
+}: {
+  provider: EthereumProvider;
+  receiptId: string;
+  wallet: string;
+}) {
+  const payload = await requestJson<ReceiptPaymentRequirements>(
+    `/api/receipts/${receiptId}/payment-requirements`,
+  );
+  const firstRequirement = payload.requirements[0]?.requirements;
+  if (!firstRequirement) {
+    throw new Error('No creator payment requirements were found for this receipt.');
+  }
+
+  const required = payload.requirements.reduce(
+    (total, item) => total + BigInt(item.requirements.amount),
+    0n,
+  );
+  const balanceHex = String(
+    await provider.request({
+      method: 'eth_call',
+      params: [
+        {
+          to: firstRequirement.asset,
+          data: encodeBalanceOf(wallet),
+        },
+        'latest',
+      ],
+    }),
+  );
+  const balance = BigInt(balanceHex);
+
+  return {
+    balance,
+    required,
+    enough: balance >= required,
+  };
 }
 
 function getEthereumProvider() {
@@ -881,6 +948,13 @@ function PlatformPage({
   const [sourceClassFilter, setSourceClassFilter] = useState<SourceKind | 'All'>('All');
   const [error, setError] = useState('');
   const [isRouting, setIsRouting] = useState(false);
+  const [walletBalanceCheck, setWalletBalanceCheck] = useState<WalletBalanceCheck>({
+    checking: false,
+    balance: null,
+    required: null,
+    enough: null,
+    error: '',
+  });
 
   const readinessRequirements = [
     ['Wallet', Boolean(connectedWallet.address || walletConfig?.agentWallet)],
@@ -892,6 +966,15 @@ function PlatformPage({
     receipt && receipt.sources.length > 0 ? receipt : payableReceipts[0] ?? receipt;
   const selectedSources = activeReceipt?.sources ?? [];
   const totalSpend = activeReceipt?.totalSpend ?? 0;
+  const walletBalanceCopy = walletBalanceCheck.checking
+    ? 'Checking balance'
+    : walletBalanceCheck.enough === true
+      ? 'Enough USDC'
+      : walletBalanceCheck.enough === false
+        ? 'Low USDC'
+        : connectedWallet.address
+          ? 'Check unavailable'
+          : 'Connect wallet';
   const normalizedSourceSearch = sourceSearch.trim().toLowerCase();
   const discoveredSources = sources.filter((source) => {
     const matchesClass =
@@ -916,6 +999,80 @@ function PlatformPage({
         : discoveredSources.length === 0
           ? 'No matching sources'
           : '';
+
+  useEffect(() => {
+    let ignore = false;
+    const requiredFallback = activeReceipt
+      ? BigInt(Math.round(activeReceipt.totalSpend * 1_000_000))
+      : null;
+
+    if (!activeReceipt || !connectedWallet.address || activeReceipt.sources.length === 0) {
+      setWalletBalanceCheck({
+        checking: false,
+        balance: null,
+        required: requiredFallback,
+        enough: null,
+        error: '',
+      });
+      return () => {
+        ignore = true;
+      };
+    }
+
+    const provider = getEthereumProvider();
+    if (!provider) {
+      setWalletBalanceCheck({
+        checking: false,
+        balance: null,
+        required: requiredFallback,
+        enough: null,
+        error: 'Browser wallet unavailable.',
+      });
+      return () => {
+        ignore = true;
+      };
+    }
+
+    setWalletBalanceCheck((current) => ({
+      ...current,
+      checking: true,
+      required: requiredFallback,
+      error: '',
+    }));
+
+    ensureArcNetwork(provider)
+      .then(() =>
+        readUsdcBalance({
+          provider,
+          receiptId: activeReceipt.id,
+          wallet: connectedWallet.address as string,
+        }),
+      )
+      .then((result) => {
+        if (ignore) return;
+        setWalletBalanceCheck({
+          checking: false,
+          balance: result.balance,
+          required: result.required,
+          enough: result.enough,
+          error: '',
+        });
+      })
+      .catch((requestError: Error) => {
+        if (ignore) return;
+        setWalletBalanceCheck({
+          checking: false,
+          balance: null,
+          required: requiredFallback,
+          enough: null,
+          error: requestError.message,
+        });
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [activeReceipt?.id, activeReceipt?.totalSpend, connectedWallet.address]);
 
   useEffect(() => {
     let ignore = false;
@@ -1189,8 +1346,8 @@ function PlatformPage({
                 icon={Wallet}
               />
               <MetricCard
-                label="Wallet"
-                value={connectedWallet.address ? 'Connected' : 'Connect'}
+                label="Wallet balance"
+                value={walletBalanceCopy}
                 icon={Server}
               />
             </div>
@@ -1414,6 +1571,18 @@ function PlatformPage({
                         {[
                           ['Receipt', activeReceipt?.id.slice(0, 8) ?? 'Awaiting route'],
                           ['Sources', selectedSources.length.toString()],
+                          [
+                            'Wallet balance',
+                            walletBalanceCheck.balance === null
+                              ? walletBalanceCopy
+                              : `${formatUsdcAtomic(walletBalanceCheck.balance)} USDC`,
+                          ],
+                          [
+                            'Required',
+                            walletBalanceCheck.required === null
+                              ? `${formatUsd(totalSpend)} USDC`
+                              : `${formatUsdcAtomic(walletBalanceCheck.required)} USDC`,
+                          ],
                           ['Payment', 'USDC'],
                           [
                             'Status',
@@ -1431,6 +1600,25 @@ function PlatformPage({
                           </div>
                         ))}
                       </div>
+                      {activeReceipt && connectedWallet.address && (
+                        <p
+                          className={`mt-3 rounded-[8px] border px-3 py-2 text-xs font-semibold leading-relaxed ${
+                            walletBalanceCheck.enough === false
+                              ? 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
+                              : walletBalanceCheck.enough === true
+                                ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
+                                : 'border-white/10 bg-white/[0.035] text-white/45'
+                          }`}
+                        >
+                          {walletBalanceCheck.checking
+                            ? 'Checking wallet USDC balance...'
+                            : walletBalanceCheck.enough === false
+                              ? 'Wallet balance is below the quoted receipt amount.'
+                              : walletBalanceCheck.enough === true
+                                ? 'Wallet has enough USDC for this quoted receipt.'
+                                : walletBalanceCheck.error || 'Wallet balance could not be checked.'}
+                        </p>
+                      )}
                       <button
                         type="button"
                         onClick={() =>
@@ -3035,6 +3223,13 @@ function ReceiptPage({
   const [verificationNotice, setVerificationNotice] = useState('');
   const [isPaying, setIsPaying] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [walletBalanceCheck, setWalletBalanceCheck] = useState<WalletBalanceCheck>({
+    checking: false,
+    balance: null,
+    required: null,
+    enough: null,
+    error: '',
+  });
 
   useEffect(() => {
     let ignore = false;
@@ -3073,6 +3268,80 @@ function ReceiptPage({
     };
   }, [id, initialReceipt]);
 
+  useEffect(() => {
+    let ignore = false;
+    const requiredFallback = receipt
+      ? BigInt(Math.round(receipt.totalSpend * 1_000_000))
+      : null;
+
+    if (!receipt || !connectedWallet.address || receipt.sources.length === 0) {
+      setWalletBalanceCheck({
+        checking: false,
+        balance: null,
+        required: requiredFallback,
+        enough: null,
+        error: '',
+      });
+      return () => {
+        ignore = true;
+      };
+    }
+
+    const provider = getEthereumProvider();
+    if (!provider) {
+      setWalletBalanceCheck({
+        checking: false,
+        balance: null,
+        required: requiredFallback,
+        enough: null,
+        error: 'Browser wallet unavailable.',
+      });
+      return () => {
+        ignore = true;
+      };
+    }
+
+    setWalletBalanceCheck((current) => ({
+      ...current,
+      checking: true,
+      required: requiredFallback,
+      error: '',
+    }));
+
+    ensureArcNetwork(provider)
+      .then(() =>
+        readUsdcBalance({
+          provider,
+          receiptId: receipt.id,
+          wallet: connectedWallet.address as string,
+        }),
+      )
+      .then((result) => {
+        if (ignore) return;
+        setWalletBalanceCheck({
+          checking: false,
+          balance: result.balance,
+          required: result.required,
+          enough: result.enough,
+          error: '',
+        });
+      })
+      .catch((requestError: Error) => {
+        if (ignore) return;
+        setWalletBalanceCheck({
+          checking: false,
+          balance: null,
+          required: requiredFallback,
+          enough: null,
+          error: requestError.message,
+        });
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [receipt?.id, receipt?.totalSpend, connectedWallet.address]);
+
   const attemptPayment = async () => {
     setIsPaying(true);
     setPaymentNotice('');
@@ -3084,6 +3353,10 @@ function ReceiptPage({
       }
       if (!payer) {
         setPaymentNotice('Connect your wallet before settling this receipt.');
+        return;
+      }
+      if (walletBalanceCheck.enough === false) {
+        setPaymentNotice('Wallet balance is below the quoted receipt amount.');
         return;
       }
 
@@ -3382,6 +3655,22 @@ function ReceiptPage({
                     {[
                       ['Budget', `${formatUsd(receipt.budget)} USDC`],
                       ['Sources', receipt.sources.length.toString()],
+                      [
+                        'Wallet balance',
+                        walletBalanceCheck.balance === null
+                          ? walletBalanceCheck.checking
+                            ? 'Checking'
+                            : connectedWallet.address
+                              ? 'Unavailable'
+                              : 'Connect wallet'
+                          : `${formatUsdcAtomic(walletBalanceCheck.balance)} USDC`,
+                      ],
+                      [
+                        'Required',
+                        walletBalanceCheck.required === null
+                          ? `${formatUsd(receipt.totalSpend)} USDC`
+                          : `${formatUsdcAtomic(walletBalanceCheck.required)} USDC`,
+                      ],
                       ['Payment', 'USDC'],
                       ['Network', receipt.network],
                       ['Status', formatStatus(receipt.paymentStatus)],
@@ -3401,7 +3690,8 @@ function ReceiptPage({
                     disabled={
                       isPaying ||
                       receipt.sources.length === 0 ||
-                      receipt.paymentStatus === 'paid'
+                      receipt.paymentStatus === 'paid' ||
+                      walletBalanceCheck.enough === false
                     }
                     className="mt-4 w-full rounded-[8px] bg-white px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
                   >
@@ -3411,10 +3701,31 @@ function ReceiptPage({
                         ? 'Connecting wallet'
                       : receipt.paymentStatus === 'paid'
                         ? 'Paid'
-                        : connectedWallet.address
-                          ? 'Pay creators'
-                          : 'Connect and pay'}
+                          : connectedWallet.address
+                            ? walletBalanceCheck.enough === false
+                              ? 'Insufficient USDC'
+                              : 'Pay creators'
+                            : 'Connect and pay'}
                   </button>
+                  {connectedWallet.address && (
+                    <p
+                      className={`mt-3 rounded-[8px] border px-3 py-2 text-xs font-semibold leading-relaxed ${
+                        walletBalanceCheck.enough === false
+                          ? 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
+                          : walletBalanceCheck.enough === true
+                            ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
+                            : 'border-white/10 bg-white/[0.035] text-white/45'
+                      }`}
+                    >
+                      {walletBalanceCheck.checking
+                        ? 'Checking wallet USDC balance...'
+                        : walletBalanceCheck.enough === false
+                          ? 'Wallet balance is below the quoted receipt amount.'
+                          : walletBalanceCheck.enough === true
+                            ? 'Wallet has enough USDC for this receipt.'
+                            : walletBalanceCheck.error || 'Wallet balance could not be checked.'}
+                    </p>
+                  )}
                   <div className="mt-3 rounded-[8px] border border-white/10 bg-white/[0.025] p-3">
                     <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/38">
                       Public receipt
