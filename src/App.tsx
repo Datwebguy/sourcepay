@@ -887,9 +887,11 @@ function PlatformPage({
     ['Arc connection', paymentReadiness?.requirements.rpcUrl],
   ] satisfies Array<[string, boolean | undefined]>;
 
-  const selectedSources = receipt?.sources ?? [];
-  const totalSpend = receipt?.totalSpend ?? 0;
   const payableReceipts = receipts.filter((item) => item.sources.length > 0);
+  const activeReceipt =
+    receipt && receipt.sources.length > 0 ? receipt : payableReceipts[0] ?? receipt;
+  const selectedSources = activeReceipt?.sources ?? [];
+  const totalSpend = activeReceipt?.totalSpend ?? 0;
   const normalizedSourceSearch = sourceSearch.trim().toLowerCase();
   const discoveredSources = sources.filter((source) => {
     const matchesClass =
@@ -1150,7 +1152,7 @@ function PlatformPage({
               {[
                 ['1', 'Add sources', hasRegisteredSources],
                 ['2', 'Route request', selectedSources.length > 0],
-                ['3', 'Pay receipt', receipt?.paymentStatus === 'paid'],
+                ['3', 'Pay receipt', activeReceipt?.paymentStatus === 'paid'],
               ].map(([step, label, done]) => (
                 <div
                   key={label as string}
@@ -1182,7 +1184,7 @@ function PlatformPage({
                 icon={Filter}
               />
               <MetricCard
-                label={receipt?.paymentStatus === 'paid' ? 'Paid' : 'Quoted spend'}
+                label={activeReceipt?.paymentStatus === 'paid' ? 'Paid' : 'Quoted spend'}
                 value={`${formatUsd(totalSpend)} USDC`}
                 icon={Wallet}
               />
@@ -1319,7 +1321,7 @@ function PlatformPage({
                       </div>
                       <div className="rounded-[8px] border border-[#5FBF7A]/30 bg-[#5FBF7A]/12 px-3 py-2 text-right text-[#8CE0A0]">
                         <p className="text-[10px] font-bold uppercase tracking-[0.14em]">
-                          {receipt?.paymentStatus === 'paid' ? 'paid' : 'quoted'}
+                          {activeReceipt?.paymentStatus === 'paid' ? 'paid' : 'quoted'}
                         </p>
                         <p className="text-sm font-extrabold">
                           {formatUsd(totalSpend)} USDC
@@ -1410,12 +1412,14 @@ function PlatformPage({
                       </div>
                       <div className="space-y-3 text-sm">
                         {[
-                          ['Receipt', receipt?.id.slice(0, 8) ?? 'Awaiting route'],
+                          ['Receipt', activeReceipt?.id.slice(0, 8) ?? 'Awaiting route'],
                           ['Sources', selectedSources.length.toString()],
                           ['Payment', 'USDC'],
                           [
                             'Status',
-                            receipt ? formatStatus(receipt.paymentStatus) : 'Awaiting route',
+                            activeReceipt
+                              ? formatStatus(activeReceipt.paymentStatus)
+                              : 'Awaiting route',
                           ],
                         ].map(([label, value]) => (
                           <div
@@ -1429,11 +1433,15 @@ function PlatformPage({
                       </div>
                       <button
                         type="button"
-                        onClick={() => receipt && onOpenReceipt(receipt.id, receipt)}
-                        disabled={!receipt}
+                        onClick={() =>
+                          activeReceipt && onOpenReceipt(activeReceipt.id, activeReceipt)
+                        }
+                        disabled={!activeReceipt}
                         className="mt-4 w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
                       >
-                        {receipt?.paymentStatus === 'paid' ? 'Open paid receipt' : 'Pay receipt'}
+                        {activeReceipt?.paymentStatus === 'paid'
+                          ? 'Open paid receipt'
+                          : 'Pay receipt'}
                       </button>
                     </div>
                   </div>
@@ -1733,7 +1741,7 @@ function PlatformPage({
                       ['Network', paymentReadiness?.network ?? 'Arc'],
                       [
                         'Payment status',
-                        receipt ? formatStatus(receipt.paymentStatus) : 'Quoted',
+                        activeReceipt ? formatStatus(activeReceipt.paymentStatus) : 'Quoted',
                       ],
                     ].map(([label, value]) => (
                       <div
