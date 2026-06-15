@@ -33,6 +33,65 @@ Frontend: `http://127.0.0.1:5173`
 
 Backend: `http://127.0.0.1:8787`
 
+## How To Use SourcePay
+
+Open the frontend at `http://127.0.0.1:5173`.
+
+### 1. Register Creator Sources
+
+1. Click `Launch SourcePay`.
+2. Open `Creator portal`.
+3. Connect the creator payout wallet.
+4. Enter a source URL or title.
+5. Choose the source class: `Article`, `Social post`, or `Transcript`.
+6. Set the USDC citation price.
+7. Paste the source material, or enter a URL and click `Prepare source` to import readable text.
+8. Click `Register source`.
+9. Sign the wallet message. This proves the payout wallet owns the source registration.
+
+Registered sources receive a fingerprint and show `Wallet signed` once ownership is verified.
+
+### 2. Route A Buyer Request
+
+1. Go back to the SourcePay dashboard.
+2. Open the `Requests` tab.
+3. Enter the research objective the buyer or AI agent needs answered.
+4. Set the maximum USDC spend.
+5. Choose eligible source types.
+6. Click `Route request`.
+
+SourcePay selects matching wallet-signed creator sources within the budget and creates a payable receipt.
+
+### 3. Pay The Receipt
+
+1. Click `Pay receipt` from the request outcome.
+2. Connect the buyer wallet.
+3. If the wallet is on the wrong network, SourcePay asks it to switch to Arc Testnet.
+4. Review the selected creator sources and total USDC amount.
+5. Click `Pay creators`.
+6. Approve the wallet signature.
+
+After payment, the receipt updates to the paid state and records the payment attempt.
+
+### 4. Review Receipts And Proof
+
+On each receipt page, users can:
+
+- See selected sources, ranks, fingerprints, and payout amounts.
+- Copy/share the public receipt URL.
+- Download receipt proof.
+- Verify the receipt proof against stored SourcePay data.
+- Review payment status and payment history.
+
+### 5. Track Creator Earnings
+
+In the creator portal, enter or connect a payout wallet to see:
+
+- Quoted creator earnings.
+- Number of citations.
+- Sources cited.
+- Receipts that selected the creator's sources.
+
 ## Environment
 
 ```env
