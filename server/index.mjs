@@ -31,6 +31,7 @@ const db = new DatabaseSync(dbPath);
 const sourceKinds = new Set(['Article', 'Social post', 'Transcript']);
 const maxSourcePreviewBytes = 500_000;
 const maxSourcePreviewRedirects = 3;
+const minUsdcAmount = 1;
 
 class ClientRequestError extends Error {
   constructor(message, status = 400) {
@@ -626,8 +627,8 @@ async function validateSource(input, existingSource = null) {
   if (!wallet) return { error: 'Creator wallet is required.' };
   if (!isEvmAddress(wallet)) return { error: 'Creator wallet must be a valid EVM address.' };
   if (!content) return { error: 'Source content or description is required.' };
-  if (!Number.isFinite(price) || price <= 0) {
-    return { error: 'Price must be a positive number.' };
+  if (!Number.isFinite(price) || price < minUsdcAmount) {
+    return { error: 'Citation price must be at least 1 USDC.' };
   }
 
   const candidate = { title, kind, wallet, price, content };
@@ -1233,8 +1234,8 @@ function routeSources({ question, budget, kinds }) {
     : [...sourceKinds];
 
   if (!normalizedQuestion) return { error: 'Research objective is required.' };
-  if (!Number.isFinite(normalizedBudget) || normalizedBudget <= 0) {
-    return { error: 'Budget must be a positive number.' };
+  if (!Number.isFinite(normalizedBudget) || normalizedBudget < minUsdcAmount) {
+    return { error: 'Budget must be at least 1 USDC.' };
   }
   if (normalizedKinds.length === 0) {
     return { error: 'At least one source class is required.' };
@@ -1390,6 +1391,13 @@ async function handleRequest(request, response) {
         config: {
           network: process.env.SOURCEPAY_NETWORK || 'Arc',
           arcRpcUrl: Boolean(process.env.ARC_RPC_URL || process.env.RPC),
+          faucetUrls: {
+            arc:
+              process.env.SOURCEPAY_ARC_FAUCET_URL ||
+              process.env.SOURCEPAY_USDC_FAUCET_URL ||
+              'https://faucet.circle.com',
+            usdc: process.env.SOURCEPAY_USDC_FAUCET_URL || 'https://faucet.circle.com',
+          },
           walletNetwork: getArcWalletNetwork(),
         },
       });

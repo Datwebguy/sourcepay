@@ -77,7 +77,7 @@ test('source detail reflects real routed citation history', async () => {
         title: previewPayload.preview.title,
         kind: 'Article',
         wallet: creatorAccount.address,
-        price: 0.001,
+        price: 1,
         content: previewPayload.preview.content,
       }),
     });
@@ -89,14 +89,14 @@ test('source detail reflects real routed citation history', async () => {
       title: previewPayload.preview.title,
       kind: 'Article',
       wallet: creatorAccount.address,
-      price: 0.001,
+      price: 1,
       content: previewPayload.preview.content,
     });
     const sourcePayload = await postJson('/api/sources', {
       title: previewPayload.preview.title,
       kind: 'Article',
       wallet: creatorAccount.address,
-      price: 0.001,
+      price: 1,
       content: previewPayload.preview.content,
       ownerWallet: creatorAccount.address,
       ownershipSignature,
@@ -113,7 +113,7 @@ test('source detail reflects real routed citation history', async () => {
 
     const routePayload = await postJson('/api/route', {
       question: 'How do Arc agents pay creators for citation licensing?',
-      budget: 0.01,
+      budget: 5000,
       kinds: ['Article'],
     });
 
@@ -123,7 +123,7 @@ test('source detail reflects real routed citation history', async () => {
     const detailAfter = await getJson(`/api/sources/${sourcePayload.source.id}`);
     assert.equal(detailAfter.totals.citations, 1);
     assert.equal(detailAfter.totals.receipts, 1);
-    assert.equal(detailAfter.totals.quotedAmount, 0.001);
+    assert.equal(detailAfter.totals.quotedAmount, 1);
     assert.equal(detailAfter.citations.length, 1);
     assert.equal(detailAfter.citations[0].receiptId, routePayload.receipt.id);
 
@@ -136,7 +136,7 @@ test('source detail reflects real routed citation history', async () => {
       requirementsPayload.requirements[0].requirements.payTo,
       creatorAccount.address,
     );
-    assert.equal(requirementsPayload.requirements[0].requirements.amount, '1000');
+    assert.equal(requirementsPayload.requirements[0].requirements.amount, '1000000');
     assert.equal(requirementsPayload.payer, null);
     assert.equal(requirementsPayload.requirements[0].typedData, null);
 

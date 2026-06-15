@@ -194,6 +194,10 @@ type PaymentReadiness = {
 type SafeConfig = {
   network: string;
   arcRpcUrl: boolean;
+  faucetUrls: {
+    arc: string | null;
+    usdc: string | null;
+  };
   walletNetwork: {
     chainId: number;
     chainIdHex: string;
@@ -274,6 +278,10 @@ const HERO_SOURCES: HeroSource[] = [
 ];
 
 const SOURCE_KINDS: SourceKind[] = ['Article', 'Social post', 'Transcript'];
+const MIN_USDC_AMOUNT = 1;
+const DEFAULT_SOURCE_PRICE = '1';
+const DEFAULT_REQUEST_BUDGET = 5000;
+const MAX_REQUEST_BUDGET = 10000;
 
 const heroIcons = {
   article: FileText,
@@ -827,7 +835,7 @@ function PlatformPage({
   isConnectingWallet: boolean;
 }) {
   const [question, setQuestion] = useState('');
-  const [budget, setBudget] = useState(0.01);
+  const [budget, setBudget] = useState(DEFAULT_REQUEST_BUDGET);
   const [enabledTypes, setEnabledTypes] = useState<SourceKind[]>(SOURCE_KINDS);
   const [sources, setSources] = useState<RegistrySource[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
@@ -1091,7 +1099,7 @@ function PlatformPage({
               <div className="space-y-3 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-white/55">Per answer</span>
-                  <span className="font-bold">${budget.toFixed(3)}</span>
+                  <span className="font-bold">${formatUsd(budget, 2)}</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-white/55">Network</span>
@@ -1178,18 +1186,35 @@ function PlatformPage({
 
                   <div className="rounded-[8px] border border-white/10 bg-black/24 p-3">
                     <div className="mb-3 flex items-center justify-between text-sm">
-                      <span className="font-bold">${budget.toFixed(3)} USDC</span>
+                      <span className="font-bold">${formatUsd(budget, 2)} USDC</span>
                       <span className="text-white/42">max spend</span>
                     </div>
                     <input
                       aria-label="Max spend"
                       type="range"
-                      min="0.002"
-                      max="0.02"
-                      step="0.001"
+                      min={MIN_USDC_AMOUNT}
+                      max={MAX_REQUEST_BUDGET}
+                      step="1"
                       value={budget}
                       onChange={(event) => setBudget(Number(event.target.value))}
                       className="w-full accent-[#5FA9FF]"
+                    />
+                    <input
+                      aria-label="Max spend amount"
+                      type="number"
+                      min={MIN_USDC_AMOUNT}
+                      max={MAX_REQUEST_BUDGET}
+                      step="1"
+                      value={budget}
+                      onChange={(event) =>
+                        setBudget(
+                          Math.min(
+                            MAX_REQUEST_BUDGET,
+                            Math.max(MIN_USDC_AMOUNT, Number(event.target.value) || MIN_USDC_AMOUNT),
+                          ),
+                        )
+                      }
+                      className="mt-3 w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-[#5FA9FF]/80"
                     />
                   </div>
 
@@ -1605,18 +1630,35 @@ function PlatformPage({
                   </p>
                   <div className="mt-5 rounded-[8px] border border-white/10 bg-black/24 p-3">
                     <div className="mb-3 flex items-center justify-between text-sm">
-                      <span className="font-bold">${budget.toFixed(3)} USDC</span>
+                      <span className="font-bold">${formatUsd(budget, 2)} USDC</span>
                       <span className="text-white/42">max spend</span>
                     </div>
                     <input
                       aria-label="Policy max spend"
                       type="range"
-                      min="0.002"
-                      max="0.02"
-                      step="0.001"
+                      min={MIN_USDC_AMOUNT}
+                      max={MAX_REQUEST_BUDGET}
+                      step="1"
                       value={budget}
                       onChange={(event) => setBudget(Number(event.target.value))}
                       className="w-full accent-[#5FA9FF]"
+                    />
+                    <input
+                      aria-label="Policy max spend amount"
+                      type="number"
+                      min={MIN_USDC_AMOUNT}
+                      max={MAX_REQUEST_BUDGET}
+                      step="1"
+                      value={budget}
+                      onChange={(event) =>
+                        setBudget(
+                          Math.min(
+                            MAX_REQUEST_BUDGET,
+                            Math.max(MIN_USDC_AMOUNT, Number(event.target.value) || MIN_USDC_AMOUNT),
+                          ),
+                        )
+                      }
+                      className="mt-3 w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-[#5FA9FF]/80"
                     />
                   </div>
                   <div className="mt-4">
@@ -1773,6 +1815,53 @@ function PlatformPage({
                     </span>
                   </div>
                 </section>
+
+                <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4 xl:col-span-2">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-sm font-bold">Testnet funds</p>
+                      <p className="mt-1 max-w-2xl text-sm leading-relaxed text-white/55">
+                        Claim testnet USDC for Arc gas and creator payments, then
+                        return here and connect the funded wallet.
+                      </p>
+                    </div>
+                    {connectedWallet.address && (
+                      <p className="rounded-[8px] border border-white/10 bg-white/[0.025] px-3 py-2 font-mono text-xs font-semibold text-white/55">
+                        {maskAddress(connectedWallet.address)}
+                      </p>
+                    )}
+                  </div>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                    {safeConfig?.faucetUrls.usdc || safeConfig?.faucetUrls.arc ? (
+                      <a
+                        href={safeConfig.faucetUrls.usdc || safeConfig.faucetUrls.arc || '#'}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center justify-center gap-2 rounded-[8px] bg-white px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF]"
+                      >
+                        Claim testnet USDC
+                        <ExternalLink size={16} strokeWidth={2.25} />
+                      </a>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        className="rounded-[8px] border border-white/10 px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-white/30"
+                      >
+                        Claim testnet USDC
+                      </button>
+                    )}
+                    <div className="rounded-[8px] border border-white/10 bg-white/[0.025] px-4 py-3 text-sm font-semibold leading-relaxed text-white/55">
+                      Arc uses USDC for transaction fees and creator payouts.
+                    </div>
+                  </div>
+                  {(!safeConfig?.faucetUrls.arc || !safeConfig?.faucetUrls.usdc) && (
+                    <p className="mt-3 text-xs font-medium leading-relaxed text-white/38">
+                      Faucet links are configured by the SourcePay operator for the current
+                      Arc testnet event.
+                    </p>
+                  )}
+                </section>
               </div>
             )}
           </div>
@@ -1802,7 +1891,7 @@ function CreatorPage({
     title: '',
     kind: 'Article',
     wallet: '',
-    price: '0.001',
+    price: DEFAULT_SOURCE_PRICE,
     content: '',
   });
   const [isSaving, setIsSaving] = useState(false);
@@ -1814,7 +1903,7 @@ function CreatorPage({
     title: '',
     kind: 'Article',
     wallet: '',
-    price: '0.001',
+    price: DEFAULT_SOURCE_PRICE,
     content: '',
   });
   const [notice, setNotice] = useState('');
@@ -1924,8 +2013,8 @@ function CreatorPage({
     const content = draft.content.trim();
     const price = Number(draft.price);
 
-    if (!title || !wallet || !content || !Number.isFinite(price) || price <= 0) {
-      setError('Complete every field before registering the source.');
+    if (!title || !wallet || !content || !Number.isFinite(price) || price < MIN_USDC_AMOUNT) {
+      setError('Complete every field and set a citation price of at least 1 USDC.');
       setNotice('');
       return;
     }
@@ -1988,7 +2077,7 @@ function CreatorPage({
       title: '',
       kind: 'Article',
       wallet: '',
-      price: '0.001',
+      price: DEFAULT_SOURCE_PRICE,
       content: '',
     });
   };
@@ -2001,8 +2090,8 @@ function CreatorPage({
     const content = editDraft.content.trim();
     const price = Number(editDraft.price);
 
-    if (!title || !wallet || !content || !Number.isFinite(price) || price <= 0) {
-      setError('Complete every field before saving the source.');
+    if (!title || !wallet || !content || !Number.isFinite(price) || price < MIN_USDC_AMOUNT) {
+      setError('Complete every field and set a citation price of at least 1 USDC.');
       setNotice('');
       return;
     }
@@ -2236,6 +2325,9 @@ function CreatorPage({
                       setDraft((current) => ({ ...current, price: event.target.value }))
                     }
                     inputMode="decimal"
+                    type="number"
+                    min={MIN_USDC_AMOUNT}
+                    step="1"
                     className="w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none placeholder:text-white/25 focus:border-[#5FA9FF]/80"
                   />
                 </label>
@@ -2430,6 +2522,9 @@ function CreatorPage({
                                 }))
                               }
                               inputMode="decimal"
+                              type="number"
+                              min={MIN_USDC_AMOUNT}
+                              step="1"
                               className="min-w-0 rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none focus:border-[#5FA9FF]/80"
                             />
                             <input

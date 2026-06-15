@@ -109,9 +109,12 @@ PORT=8787
 SOURCEPAY_DB_PATH=./data/sourcepay.sqlite
 SOURCEPAY_NETWORK=Arc
 ARC_RPC_URL=
+SOURCEPAY_ARC_FAUCET_URL=
+SOURCEPAY_USDC_FAUCET_URL=
 ```
 
 `ARC_RPC_URL` should point to the Arc RPC endpoint used for the event.
+Set the faucet URLs to the official Arc testnet and USDC claim pages for the event.
 
 ## Main Flow
 
@@ -149,6 +152,8 @@ fly volumes create sourcepay_data --size 1 --region iad
 
 ```bash
 fly secrets set ARC_RPC_URL="https://..."
+fly secrets set SOURCEPAY_ARC_FAUCET_URL="https://..."
+fly secrets set SOURCEPAY_USDC_FAUCET_URL="https://..."
 ```
 
 5. Deploy:
