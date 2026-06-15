@@ -1262,8 +1262,8 @@ function buildReceipt(runId) {
 
   return {
     ...normalizedRun,
-    sources: statements.getRunSources.all(runId).map(normalizeSource),
-    paymentAttempts: statements.listPaymentAttempts.all(runId),
+    sources: statements.getRunSources.all(normalizedRun.id).map(normalizeSource),
+    paymentAttempts: statements.listPaymentAttempts.all(normalizedRun.id),
   };
 }
 
