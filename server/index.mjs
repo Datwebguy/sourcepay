@@ -964,8 +964,8 @@ function isXPostUrl(url) {
 }
 
 function buildXPostPreview({ url, title, content }) {
-  const cleanTitle = cleanXTitle(title, url);
   const cleanContent = cleanXContent(content);
+  const cleanTitle = inferXTitleFromContent(cleanContent) || cleanXTitle(title, url);
 
   return {
     title: cleanTitle,
@@ -991,13 +991,13 @@ function cleanXContent(content) {
   value = value.replace(/:host\{[\s\S]*$/iu, ' ');
   value = value.replace(/\bnumber-flow-react\b[\s\S]*$/iu, ' ');
   value = value.replace(/^.*?\bPost\s+/iu, '');
+  value = value.replace(/^[^@]{1,80}\s+@[A-Za-z0-9_]{1,20}\s+/u, '');
+  value = value.replace(/^(Article|Thread|Post)\s+/iu, '');
   value = value
     .replace(/^Log in\s+Sign up\s+/iu, '')
     .replace(/\s+Log in\s+Sign up\s+/giu, ' ')
-    .replace(/\s+\d+(?:\.\d+)?[KM]?\s+Views[\s\S]*$/iu, (match) => {
-      const views = match.match(/\d+(?:\.\d+)?[KM]?\s+Views/iu)?.[0];
-      return views ? ` ${views}` : '';
-    })
+    .replace(/\s+\d{1,2}:\d{2}\s+[AP]M\s+·\s+\w+\s+\d{1,2},\s+20\d{2}\s+\d+(?:\.\d+)?[KM]?\s+Views[\s\S]*$/iu, ' ')
+    .replace(/\s+\d+(?:\.\d+)?[KM]?\s+Views[\s\S]*$/iu, ' ')
     .replace(/\s+Read\s+\d+\s+replies[\s\S]*$/iu, ' ')
     .replace(/\s+Sign up with Google[\s\S]*$/iu, ' ')
     .replace(/\s+By signing up,[\s\S]*$/iu, ' ')
@@ -1008,6 +1008,19 @@ function cleanXContent(content) {
     .replace(/\s+©\s+20\d{2}\s+X Corp\.[\s\S]*$/iu, ' ');
 
   return normalizeSourceText(value).slice(0, 5000);
+}
+
+function inferXTitleFromContent(content) {
+  const normalized = normalizeSourceText(content);
+  if (!normalized) return '';
+
+  const sentenceTitle = normalized.match(/^(.{12,120}?)\.\s+[A-Z0-9]/u)?.[1];
+  if (sentenceTitle) return sentenceTitle.slice(0, 120);
+
+  const articleLead = normalized.match(/^(.{12,90}?)\s+(When|Why|How|What|If|The|A|An|Everyone|I)\s/u)?.[1];
+  if (articleLead) return articleLead.slice(0, 120);
+
+  return normalized.slice(0, 120);
 }
 
 function canonicalXUrl(url) {
