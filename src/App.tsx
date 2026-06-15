@@ -970,6 +970,7 @@ function PlatformPage({
   const refreshReceipts = async () => {
     const payload = await requestJson<{ receipts: Receipt[] }>('/api/receipts');
     setReceipts(payload.receipts);
+    setReceipt((current) => current ?? payload.receipts.find((item) => item.sources.length > 0) ?? null);
   };
 
   useEffect(() => {
@@ -1176,12 +1177,12 @@ function PlatformPage({
                 icon={Database}
               />
               <MetricCard
-                label="Selected"
+                label="Selected sources"
                 value={selectedSources.length.toString()}
                 icon={Filter}
               />
               <MetricCard
-                label="Spend"
+                label={receipt?.paymentStatus === 'paid' ? 'Paid' : 'Quoted spend'}
                 value={`${formatUsd(totalSpend)} USDC`}
                 icon={Wallet}
               />
@@ -1286,8 +1287,8 @@ function PlatformPage({
                     {isRouting ? 'Routing' : routeBlockReason || 'Route request'}
                   </button>
                   <p className="text-xs font-medium leading-relaxed text-white/38">
-                    SourcePay will select wallet-signed creator sources within budget and
-                    create a payable receipt.
+                    Routing creates a quote. USDC is deducted only after wallet approval
+                    on the receipt page.
                   </p>
                   {error && (
                     <p className="rounded-[8px] border border-[#F4845F]/35 bg-[#F4845F]/12 px-3 py-2 text-sm font-semibold text-[#F7B49D]">
@@ -1318,7 +1319,7 @@ function PlatformPage({
                       </div>
                       <div className="rounded-[8px] border border-[#5FBF7A]/30 bg-[#5FBF7A]/12 px-3 py-2 text-right text-[#8CE0A0]">
                         <p className="text-[10px] font-bold uppercase tracking-[0.14em]">
-                          spend
+                          {receipt?.paymentStatus === 'paid' ? 'paid' : 'quoted'}
                         </p>
                         <p className="text-sm font-extrabold">
                           {formatUsd(totalSpend)} USDC
@@ -3130,7 +3131,9 @@ function ReceiptPage({
   };
 
   const downloadProof = async () => {
+    setPaymentNotice('');
     setReceiptNotice('');
+    setVerificationNotice('');
 
     try {
       const payload = await requestJson<{ proof: unknown }>(
@@ -3154,19 +3157,48 @@ function ReceiptPage({
   };
 
   const shareReceipt = async () => {
+    setPaymentNotice('');
     setReceiptNotice('');
+    setVerificationNotice('');
     const receiptUrl = window.location.href;
 
     try {
-      await navigator.clipboard.writeText(receiptUrl);
-      setReceiptNotice('Receipt link copied.');
-    } catch {
+      if (navigator.share) {
+        await navigator.share({
+          title: 'SourcePay receipt',
+          text: `SourcePay receipt ${id.slice(0, 8)}`,
+          url: receiptUrl,
+        });
+        setReceiptNotice('Receipt share sheet opened.');
+        return;
+      }
+
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(receiptUrl);
+        setReceiptNotice('Receipt link copied.');
+        return;
+      }
+
       setReceiptNotice(receiptUrl);
+    } catch (shareError) {
+      if ((shareError as Error).name === 'AbortError') {
+        setReceiptNotice('Share cancelled.');
+        return;
+      }
+
+      try {
+        await navigator.clipboard.writeText(receiptUrl);
+        setReceiptNotice('Receipt link copied.');
+      } catch {
+        setReceiptNotice(receiptUrl);
+      }
     }
   };
 
   const verifyProof = async () => {
     setIsVerifying(true);
+    setPaymentNotice('');
+    setReceiptNotice('');
     setVerificationNotice('');
 
     try {
@@ -3180,7 +3212,11 @@ function ReceiptPage({
         body: JSON.stringify({ proof: proofPayload.proof }),
       });
 
-      setVerificationNotice(verificationPayload.verification.reason);
+      setVerificationNotice(
+        verificationPayload.verification.valid
+          ? 'Verified. This receipt matches the stored route and source fingerprints.'
+          : verificationPayload.verification.reason,
+      );
     } catch (requestError) {
       setVerificationNotice((requestError as Error).message);
     } finally {
@@ -3405,36 +3441,32 @@ function ReceiptPage({
                   >
                     {isVerifying ? 'Verifying' : 'Verify receipt'}
                   </button>
+                  {(paymentNotice || receiptNotice || verificationNotice) && (
+                    <div className="mt-3 space-y-2">
+                      {paymentNotice && (
+                        <p
+                          className={`rounded-[8px] border p-3 text-sm font-semibold leading-relaxed ${
+                            receipt.paymentStatus === 'paid'
+                              ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
+                              : 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
+                          }`}
+                        >
+                          {paymentNotice}
+                        </p>
+                      )}
+                      {receiptNotice && (
+                        <p className="rounded-[8px] border border-[#5FA9FF]/30 bg-[#5FA9FF]/10 p-3 text-sm font-semibold leading-relaxed text-[#9CCCFF]">
+                          {receiptNotice}
+                        </p>
+                      )}
+                      {verificationNotice && (
+                        <p className="rounded-[8px] border border-[#5FBF7A]/30 bg-[#5FBF7A]/10 p-3 text-sm font-semibold leading-relaxed text-[#8CE0A0]">
+                          {verificationNotice}
+                        </p>
+                      )}
+                    </div>
+                  )}
                 </section>
-
-                {(paymentNotice || receiptNotice || verificationNotice) && (
-                  <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4">
-                    <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
-                      Latest update
-                    </p>
-                    {paymentNotice && (
-                      <p
-                        className={`rounded-[8px] border p-3 text-sm font-semibold leading-relaxed ${
-                          receipt.paymentStatus === 'paid'
-                            ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
-                            : 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
-                        }`}
-                      >
-                        {paymentNotice}
-                      </p>
-                    )}
-                    {receiptNotice && (
-                      <p className="rounded-[8px] border border-[#5FA9FF]/30 bg-[#5FA9FF]/10 p-3 text-sm font-semibold leading-relaxed text-[#9CCCFF]">
-                        {receiptNotice}
-                      </p>
-                    )}
-                    {verificationNotice && (
-                      <p className="rounded-[8px] border border-[#5FBF7A]/30 bg-[#5FBF7A]/10 p-3 text-sm font-semibold leading-relaxed text-[#8CE0A0]">
-                        {verificationNotice}
-                      </p>
-                    )}
-                  </section>
-                )}
 
                 {receipt.paymentAttempts && receipt.paymentAttempts.length > 0 && (
                   <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4">
