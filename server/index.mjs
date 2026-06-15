@@ -1,5 +1,7 @@
 import { createServer } from 'node:http';
+import { lookup } from 'node:dns/promises';
 import { mkdirSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -24,6 +26,8 @@ mkdirSync(dataDir, { recursive: true });
 const dbPath = process.env.SOURCEPAY_DB_PATH ?? join(dataDir, 'sourcepay.sqlite');
 const db = new DatabaseSync(dbPath);
 const sourceKinds = new Set(['Article', 'Social post', 'Transcript']);
+const maxSourcePreviewBytes = 500_000;
+const maxSourcePreviewRedirects = 3;
 
 class ClientRequestError extends Error {
   constructor(message, status = 400) {
@@ -669,13 +673,7 @@ async function sourcePreviewFromUrl(url) {
   }
 
   try {
-    const response = await fetch(parsedUrl, {
-      headers: {
-        Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5',
-        'User-Agent': 'SourcePay/0.1 source-preview',
-      },
-      signal: AbortSignal.timeout(8000),
-    });
+    const response = await fetchPublicSourceUrl(parsedUrl);
 
     if (!response.ok) {
       return { error: `Source URL returned HTTP ${response.status}.` };
@@ -686,7 +684,7 @@ async function sourcePreviewFromUrl(url) {
       return { error: 'Source URL did not return readable text.' };
     }
 
-    const body = await response.text();
+    const body = await readLimitedResponseText(response, maxSourcePreviewBytes);
     const isHtml = contentType.includes('html') || /<html|<body|<article/iu.test(body);
     const title = isHtml
       ? extractHtmlTitle(body) || readableUrlTitle(parsedUrl)
@@ -706,12 +704,148 @@ async function sourcePreviewFromUrl(url) {
       },
     };
   } catch (error) {
+    if (error instanceof ClientRequestError) {
+      return { error: error.message };
+    }
     if (error?.name === 'TimeoutError') {
       return { error: 'Source URL timed out.' };
     }
 
     return { error: 'Source URL could not be read.' };
   }
+}
+
+async function fetchPublicSourceUrl(url, redirects = 0) {
+  await assertPublicSourceUrl(url);
+
+  const response = await fetch(url, {
+    headers: {
+      Accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5',
+      'User-Agent': 'SourcePay/0.1 source-preview',
+    },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(8000),
+  });
+
+  if (isRedirectStatus(response.status)) {
+    if (redirects >= maxSourcePreviewRedirects) {
+      throw new ClientRequestError('Source URL redirected too many times.');
+    }
+
+    const location = response.headers.get('location');
+    if (!location) {
+      throw new ClientRequestError('Source URL redirect was missing a destination.');
+    }
+
+    return fetchPublicSourceUrl(new URL(location, url), redirects + 1);
+  }
+
+  return response;
+}
+
+async function assertPublicSourceUrl(url) {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new ClientRequestError('Source URL must use http or https.');
+  }
+  if (url.username || url.password) {
+    throw new ClientRequestError('Source URL cannot include credentials.');
+  }
+  if (isBlockedHostname(url.hostname)) {
+    throw new ClientRequestError('Source URL must point to a public website.');
+  }
+
+  const addresses = await resolveHostnameAddresses(url.hostname);
+  if (addresses.length === 0 || addresses.some((address) => isBlockedIpAddress(address))) {
+    throw new ClientRequestError('Source URL must point to a public website.');
+  }
+}
+
+async function resolveHostnameAddresses(hostname) {
+  if (isIP(hostname)) return [hostname];
+
+  try {
+    return (await lookup(hostname, { all: true, verbatim: true })).map(
+      (entry) => entry.address,
+    );
+  } catch {
+    throw new ClientRequestError('Source URL host could not be resolved.');
+  }
+}
+
+function isBlockedHostname(hostname) {
+  const normalized = hostname.toLowerCase().replace(/\.$/u, '');
+  return (
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized === '0' ||
+    normalized === '0.0.0.0'
+  );
+}
+
+function isBlockedIpAddress(address) {
+  if (address.includes('%')) return true;
+
+  const family = isIP(address);
+  if (family === 4) return isBlockedIpv4(address);
+  if (family === 6) return isBlockedIpv6(address);
+  return true;
+}
+
+function isBlockedIpv4(address) {
+  const parts = address.split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return true;
+  const [first, second] = parts;
+
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    first >= 224
+  );
+}
+
+function isBlockedIpv6(address) {
+  const normalized = address.toLowerCase();
+
+  return (
+    normalized === '::' ||
+    normalized === '::1' ||
+    normalized.startsWith('fc') ||
+    normalized.startsWith('fd') ||
+    normalized.startsWith('fe80:') ||
+    normalized.startsWith('ff')
+  );
+}
+
+function isRedirectStatus(status) {
+  return [301, 302, 303, 307, 308].includes(status);
+}
+
+async function readLimitedResponseText(response, maxBytes) {
+  const reader = response.body?.getReader();
+  if (!reader) return response.text();
+
+  const chunks = [];
+  let totalBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel();
+      throw new ClientRequestError('Source URL returned too much text.');
+    }
+    chunks.push(value);
+  }
+
+  return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
 function isHttpUrl(value) {

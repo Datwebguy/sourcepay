@@ -52,6 +52,24 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(previewPayload.preview.title, 'Arc citation licensing note');
     assert.match(previewPayload.preview.content, /pay creators/u);
 
+    const localPreviewResponse = await fetch(`${baseUrl}/api/source-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ material: `${baseUrl}/health` }),
+    });
+    const localPreviewPayload = await localPreviewResponse.json();
+    assert.equal(localPreviewResponse.status, 400);
+    assert.equal(localPreviewPayload.error, 'Source URL must point to a public website.');
+
+    const credentialPreviewResponse = await fetch(`${baseUrl}/api/source-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ material: 'https://user:pass@example.com/source' }),
+    });
+    const credentialPreviewPayload = await credentialPreviewResponse.json();
+    assert.equal(credentialPreviewResponse.status, 400);
+    assert.equal(credentialPreviewPayload.error, 'Source URL cannot include credentials.');
+
     const unsignedSourceResponse = await fetch(`${baseUrl}/api/sources`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
