@@ -3277,6 +3277,26 @@ function App() {
   });
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
 
+  useEffect(() => {
+    let ignore = false;
+
+    requestJson<{ wallet: WalletConfig }>('/api/wallet')
+      .then((payload) => {
+        if (!ignore) {
+          setConnectedWallet({ address: payload.wallet.agentWallet });
+        }
+      })
+      .catch(() => {
+        if (!ignore) {
+          setConnectedWallet({ address: null });
+        }
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, []);
+
   const connectWallet = async () => {
     setIsConnectingWallet(true);
 
