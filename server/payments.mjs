@@ -89,7 +89,7 @@ export function createReceiptSigningRequests(receipt, walletConfig) {
       price: source.price,
       wallet: source.wallet,
       requirements,
-      typedData: payer ? createSigningTypedData({ payer, requirements }) : null,
+      typedData: payer ? createSigningTypedData({ payer, requirements, source }) : null,
     };
   });
 }
@@ -118,16 +118,14 @@ export async function createPaymentExecution({ receipt, walletConfig, payments }
   const paymentBySource = new Map(
     payments
       .filter((payment) => payment && typeof payment === 'object')
-      .map((payment) => [
-        String(payment.sourceId ?? ''),
-        normalizeSubmittedPaymentPayload(payment),
-      ]),
+      .map((payment) => [String(payment.sourceId ?? ''), payment]),
   );
   const facilitator = createGatewayFacilitator();
   const settlements = [];
 
   for (const source of receipt.sources) {
-    const paymentPayload = paymentBySource.get(source.id);
+    const submittedPayment = paymentBySource.get(source.id);
+    const paymentPayload = normalizeSubmittedPaymentPayload(submittedPayment, source);
     if (!paymentPayload) {
       return {
         ok: false,
@@ -207,7 +205,7 @@ function createSourcePaymentRequirements(source) {
   };
 }
 
-function createSigningTypedData({ payer, requirements }) {
+function createSigningTypedData({ payer, requirements, source }) {
   const chainId = Number(requirements.network.split(':')[1]);
   const now = Math.floor(Date.now() / 1000);
   const validAfter = '0';
@@ -244,6 +242,10 @@ function createSigningTypedData({ payer, requirements }) {
     message: authorization,
     paymentPayloadTemplate: {
       x402Version,
+      scheme: requirements.scheme,
+      network: requirements.network,
+      resource: createPaymentResource(source),
+      accepted: requirements,
       payload: {
         authorization,
         signature: '<signature>',
@@ -252,11 +254,17 @@ function createSigningTypedData({ payer, requirements }) {
   };
 }
 
-function normalizeSubmittedPaymentPayload(payment) {
+function normalizeSubmittedPaymentPayload(payment, source) {
   if (payment.paymentPayload) return payment.paymentPayload;
   if (payment.authorization && payment.signature) {
+    const requirements = createSourcePaymentRequirements(source);
+
     return {
       x402Version,
+      scheme: requirements.scheme,
+      network: requirements.network,
+      resource: createPaymentResource(source),
+      accepted: requirements,
       payload: {
         authorization: payment.authorization,
         signature: payment.signature,
@@ -265,6 +273,16 @@ function normalizeSubmittedPaymentPayload(payment) {
   }
 
   return null;
+}
+
+function createPaymentResource(source) {
+  return {
+    url: `sourcepay://sources/${source.id}`,
+    description: `SourcePay creator source: ${source.title}`,
+    mimeType: 'application/json',
+    serviceName: 'SourcePay',
+    tags: ['sourcepay', source.kind.toLowerCase()],
+  };
 }
 
 function usdcToAtomic(value) {

@@ -88,7 +88,12 @@ type PaymentRequirement = {
     amount: string;
     payTo: string;
   };
-  typedData: ({ message: Record<string, unknown> } & Record<string, unknown>) | null;
+  typedData:
+    | ({
+        message: Record<string, unknown>;
+        paymentPayloadTemplate?: Record<string, unknown>;
+      } & Record<string, unknown>)
+    | null;
 };
 
 type ReceiptPaymentRequirements = {
@@ -3378,15 +3383,34 @@ function ReceiptPage({
           return;
         }
 
+        const { paymentPayloadTemplate, ...signableTypedData } = item.typedData;
         const signature = await provider.request({
           method: 'eth_signTypedData_v4',
-          params: [payer, JSON.stringify(item.typedData)],
+          params: [payer, JSON.stringify(signableTypedData)],
         });
+        const templatePayload =
+          paymentPayloadTemplate && typeof paymentPayloadTemplate === 'object'
+            ? paymentPayloadTemplate
+            : null;
+        const templateInnerPayload =
+          templatePayload?.payload && typeof templatePayload.payload === 'object'
+            ? (templatePayload.payload as Record<string, unknown>)
+            : {};
 
         payments.push({
           sourceId: item.sourceId,
-          authorization: item.typedData.message,
-          signature: String(signature),
+          paymentPayload: templatePayload
+            ? {
+                ...templatePayload,
+                payload: {
+                  ...templateInnerPayload,
+                  authorization: item.typedData.message,
+                  signature: String(signature),
+                },
+              }
+            : undefined,
+          authorization: templatePayload ? undefined : item.typedData.message,
+          signature: templatePayload ? undefined : String(signature),
         });
       }
 

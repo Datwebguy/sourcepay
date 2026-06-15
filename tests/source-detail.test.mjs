@@ -190,6 +190,23 @@ test('source detail reflects real routed citation history', async () => {
     );
     assert.match(signingPayload.requirements[0].typedData.message.nonce, /^0x[0-9a-f]{64}$/u);
     assert.equal(signingPayload.requirements[0].typedData.domain.chainId, 5042002);
+    assert.equal(signingPayload.requirements[0].typedData.paymentPayloadTemplate.x402Version, 2);
+    assert.equal(
+      signingPayload.requirements[0].typedData.paymentPayloadTemplate.resource.serviceName,
+      'SourcePay',
+    );
+    assert.equal(
+      signingPayload.requirements[0].typedData.paymentPayloadTemplate.accepted.amount,
+      '1000000',
+    );
+    assert.equal(
+      signingPayload.requirements[0].typedData.paymentPayloadTemplate.accepted.payTo,
+      creatorAccount.address,
+    );
+    assert.equal(
+      signingPayload.requirements[0].typedData.paymentPayloadTemplate.payload.authorization.to,
+      creatorAccount.address,
+    );
 
     const paymentResponse = await fetch(
       `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,
