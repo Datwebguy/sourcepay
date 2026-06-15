@@ -59,6 +59,7 @@ type RegistrySource = {
 
 type SourceDraft = {
   title: string;
+  url: string;
   kind: SourceKind;
   wallet: string;
   price: string;
@@ -1889,6 +1890,7 @@ function CreatorPage({
   const [sources, setSources] = useState<RegistrySource[]>([]);
   const [draft, setDraft] = useState<SourceDraft>({
     title: '',
+    url: '',
     kind: 'Article',
     wallet: '',
     price: DEFAULT_SOURCE_PRICE,
@@ -1901,6 +1903,7 @@ function CreatorPage({
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<SourceDraft>({
     title: '',
+    url: '',
     kind: 'Article',
     wallet: '',
     price: DEFAULT_SOURCE_PRICE,
@@ -1970,7 +1973,7 @@ function CreatorPage({
   }, [draft.wallet]);
 
   const prepareSource = async () => {
-    const material = draft.content.trim() || draft.title.trim();
+    const material = draft.url.trim() || draft.content.trim() || draft.title.trim();
     if (!material) {
       setError('Paste source material or enter a source URL first.');
       setNotice('');
@@ -1992,11 +1995,8 @@ function CreatorPage({
 
       setDraft((current) => ({
         ...current,
-        title:
-          current.title.trim() &&
-          !current.title.trim().toLowerCase().startsWith('http')
-            ? current.title
-            : payload.preview.title,
+        title: current.title.trim() ? current.title : payload.preview.title,
+        url: current.url.trim() || payload.preview.url || '',
         content: payload.preview.content,
       }));
       setNotice('Source prepared. Review it before registering.');
@@ -2062,6 +2062,7 @@ function CreatorPage({
     setEditingSourceId(source.id);
     setEditDraft({
       title: source.title,
+      url: '',
       kind: source.kind,
       wallet: source.wallet,
       price: String(source.price),
@@ -2075,6 +2076,7 @@ function CreatorPage({
     setEditingSourceId(null);
     setEditDraft({
       title: '',
+      url: '',
       kind: 'Article',
       wallet: '',
       price: DEFAULT_SOURCE_PRICE,
@@ -2282,14 +2284,28 @@ function CreatorPage({
             <div className="space-y-3 p-4">
               <label className="block">
                 <span className="mb-2 block text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
-                  Source URL or title
+                  Source URL
+                </span>
+                <input
+                  value={draft.url}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, url: event.target.value }))
+                  }
+                  placeholder="https://x.com/creator/status/..."
+                  className="w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none placeholder:text-white/25 focus:border-[#5FA9FF]/80"
+                />
+              </label>
+
+              <label className="block">
+                <span className="mb-2 block text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
+                  Source title
                 </span>
                 <input
                   value={draft.title}
                   onChange={(event) =>
                     setDraft((current) => ({ ...current, title: event.target.value }))
                   }
-                  placeholder="https://..."
+                  placeholder="Anatoli Kopadze on X: AI Agents"
                   className="w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none placeholder:text-white/25 focus:border-[#5FA9FF]/80"
                 />
               </label>

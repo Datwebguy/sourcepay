@@ -743,21 +743,28 @@ async function sourcePreviewFromUrl(url) {
 
     const body = await readLimitedResponseText(response, maxSourcePreviewBytes);
     const isHtml = contentType.includes('html') || /<html|<body|<article/iu.test(body);
-    const title = isHtml
+    const rawTitle = isHtml
       ? extractHtmlTitle(body) || readableUrlTitle(parsedUrl)
       : readableUrlTitle(parsedUrl);
-    const content = normalizeSourceText(isHtml ? htmlToText(body) : body);
+    const rawContent = normalizeSourceText(isHtml ? htmlToText(body) : body);
+    const preview = isXPostUrl(parsedUrl)
+      ? buildXPostPreview({ url: parsedUrl, title: rawTitle, content: rawContent })
+      : {
+          title: rawTitle,
+          content: rawContent,
+          url: parsedUrl.toString(),
+        };
 
-    if (content.length < 20) {
+    if (preview.content.length < 20) {
       return { error: 'Source URL did not contain enough readable text.' };
     }
 
     return {
       value: {
-        title,
-        content,
+        title: preview.title,
+        content: preview.content,
         sourceType: 'url',
-        url: parsedUrl.toString(),
+        url: preview.url,
       },
     };
   } catch (error) {
@@ -912,6 +919,64 @@ function isHttpUrl(value) {
   } catch {
     return false;
   }
+}
+
+function isXPostUrl(url) {
+  const host = url.hostname.toLowerCase().replace(/^www\./u, '');
+  return (host === 'x.com' || host === 'twitter.com') && /\/status\/\d+/u.test(url.pathname);
+}
+
+function buildXPostPreview({ url, title, content }) {
+  const cleanTitle = cleanXTitle(title, url);
+  const cleanContent = cleanXContent(content);
+
+  return {
+    title: cleanTitle,
+    content: cleanContent,
+    url: canonicalXUrl(url),
+  };
+}
+
+function cleanXTitle(title, url) {
+  const normalized = normalizeSourceText(
+    decodeHtml(title)
+      .replace(/\s*\/\s*X$/iu, '')
+      .replace(/\s+on\s+X:\s*".*$/iu, ' on X'),
+  );
+  if (normalized && !normalized.includes('Log in')) return normalized.slice(0, 160);
+
+  const handle = url.pathname.split('/').filter(Boolean)[0];
+  return handle ? `${handle} on X` : readableUrlTitle(url);
+}
+
+function cleanXContent(content) {
+  let value = normalizeSourceText(decodeHtml(content));
+  value = value.replace(/:host\{[\s\S]*$/iu, ' ');
+  value = value.replace(/\bnumber-flow-react\b[\s\S]*$/iu, ' ');
+  value = value.replace(
+    /^.*?\bPost\s+([A-Z][\s\S]*?)(?:\s+Read\s+\d+\s+replies|\s+New to X\?|\s+Relevant people|\s+Trending now|\s+Don'?t miss what'?s happening|\s+Terms of Service\b|$)/iu,
+    '$1',
+  );
+  value = value
+    .replace(/\s+Log in\s+Sign up\s+/giu, ' ')
+    .replace(/\s+Sign up with Google[\s\S]*$/iu, ' ')
+    .replace(/\s+By signing up,[\s\S]*$/iu, ' ')
+    .replace(/\s+Terms of Service[\s\S]*$/iu, ' ')
+    .replace(/\s+Relevant people[\s\S]*$/iu, ' ')
+    .replace(/\s+Trending now[\s\S]*$/iu, ' ')
+    .replace(/\s+New to X\?[\s\S]*$/iu, ' ')
+    .replace(/\s+©\s+20\d{2}\s+X Corp\.[\s\S]*$/iu, ' ');
+
+  return normalizeSourceText(value).slice(0, 5000);
+}
+
+function canonicalXUrl(url) {
+  const [handle, status, id] = url.pathname.split('/').filter(Boolean);
+  if (handle && status === 'status' && id) {
+    return `https://x.com/${handle}/status/${id}`;
+  }
+
+  return url.toString();
 }
 
 function extractHtmlTitle(html) {
