@@ -699,6 +699,43 @@ function buildSourceOwnershipMessage(source) {
   ].join('\n');
 }
 
+function buildSourceArchiveMessage(source) {
+  const normalized = normalizeSource(source);
+
+  return [
+    'SourcePay source archive',
+    `Source ID: ${normalized.id}`,
+    `Payout wallet: ${normalized.wallet}`,
+    `Title: ${normalized.title}`,
+    `Source fingerprint: ${normalized.fingerprint}`,
+  ].join('\n');
+}
+
+async function validateSourceArchive(input, source) {
+  const ownerWallet = String(input.ownerWallet ?? '').trim();
+  const archiveSignature = String(input.archiveSignature ?? '').trim();
+  const normalized = normalizeSource(source);
+
+  if (!ownerWallet || !archiveSignature) {
+    return { error: 'Sign with the payout wallet before archiving this source.' };
+  }
+  if (ownerWallet.toLowerCase() !== normalized.wallet.toLowerCase()) {
+    return { error: 'Only the payout wallet can archive this source.' };
+  }
+
+  const verified = await verifyMessage({
+    address: normalized.wallet,
+    message: buildSourceArchiveMessage(source),
+    signature: archiveSignature,
+  }).catch(() => false);
+
+  if (!verified) {
+    return { error: 'Wallet signature did not authorize this archive.' };
+  }
+
+  return { value: true };
+}
+
 async function buildSourcePreview(input) {
   const material = String(input.material ?? '').trim();
   if (!material) return { error: 'Source material is required.' };
@@ -1649,12 +1686,20 @@ async function handleRequest(request, response) {
 
     if (sourceMatch && request.method === 'DELETE') {
       const sourceId = sourceMatch[1];
-      const result = statements.deleteSource.run(sourceId);
-      if (result.changes === 0) {
+      const existing = statements.getSource.get(sourceId);
+
+      if (!existing) {
         sendJson(response, 404, { error: 'Source not found.' });
         return;
       }
 
+      const parsed = await validateSourceArchive(await readBody(request), existing);
+      if (parsed.error) {
+        sendJson(response, 403, { error: parsed.error });
+        return;
+      }
+
+      statements.deleteSource.run(sourceId);
       sendJson(response, 200, { ok: true });
       return;
     }

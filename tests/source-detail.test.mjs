@@ -106,6 +106,18 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(sourcePayload.source.fingerprint.length, 64);
     assert.equal(sourcePayload.source.ownershipVerified, true);
 
+    const unsignedArchiveResponse = await fetch(
+      `${baseUrl}/api/sources/${sourcePayload.source.id}`,
+      {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+    );
+    const unsignedArchivePayload = await unsignedArchiveResponse.json();
+    assert.equal(unsignedArchiveResponse.status, 403);
+    assert.match(unsignedArchivePayload.error, /Sign with the payout wallet/u);
+
     const detailBefore = await getJson(`/api/sources/${sourcePayload.source.id}`);
     assert.equal(detailBefore.totals.citations, 0);
     assert.equal(detailBefore.totals.quotedAmount, 0);
@@ -205,6 +217,19 @@ test('source detail reflects real routed citation history', async () => {
 
     const missingResponse = await fetch(`${baseUrl}/api/sources/not-found`);
     assert.equal(missingResponse.status, 404);
+
+    const archiveSignature = await signSourceArchive(creatorAccount, sourcePayload.source);
+    const archiveResponse = await fetch(`${baseUrl}/api/sources/${sourcePayload.source.id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ownerWallet: creatorAccount.address,
+        archiveSignature,
+      }),
+    });
+    const archivePayload = await archiveResponse.json();
+    assert.equal(archiveResponse.status, 200);
+    assert.equal(archivePayload.ok, true);
   } finally {
     server.kill();
     await onceExit(server);
@@ -253,6 +278,12 @@ async function signSourceOwnership(account, source) {
   });
 }
 
+async function signSourceArchive(account, source) {
+  return account.signMessage({
+    message: buildSourceArchiveMessage(source),
+  });
+}
+
 function buildSourceOwnershipMessage(source) {
   return [
     'SourcePay source registration',
@@ -261,6 +292,16 @@ function buildSourceOwnershipMessage(source) {
     `Class: ${source.kind}`,
     `Citation price USDC: ${source.price}`,
     `Source fingerprint: ${sourceFingerprint(source)}`,
+  ].join('\n');
+}
+
+function buildSourceArchiveMessage(source) {
+  return [
+    'SourcePay source archive',
+    `Source ID: ${source.id}`,
+    `Payout wallet: ${source.wallet}`,
+    `Title: ${source.title}`,
+    `Source fingerprint: ${source.fingerprint}`,
   ].join('\n');
 }
 

@@ -414,6 +414,16 @@ async function buildSourceOwnershipMessage(source: {
   ].join('\n');
 }
 
+async function buildSourceArchiveMessage(source: RegistrySource) {
+  return [
+    'SourcePay source archive',
+    `Source ID: ${source.id}`,
+    `Payout wallet: ${source.wallet.trim()}`,
+    `Title: ${source.title.trim()}`,
+    `Source fingerprint: ${source.fingerprint ?? ''}`,
+  ].join('\n');
+}
+
 async function ensureArcNetwork(provider: EthereumProvider) {
   const payload = await requestJson<{ config: SafeConfig }>('/api/config');
   const { walletNetwork } = payload.config;
@@ -520,13 +530,18 @@ function paymentStateCopy(status: string) {
 }
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...init?.headers,
+      },
+    });
+  } catch {
+    throw new Error('SourcePay could not reach the API. Please refresh and try again.');
+  }
   const payload = await response.json();
 
   if (!response.ok) {
@@ -540,13 +555,18 @@ async function requestJsonWithStatus<T>(
   path: string,
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; payload: T }> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...init?.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...init?.headers,
+      },
+    });
+  } catch {
+    throw new Error('SourcePay could not reach the API. Please refresh and try again.');
+  }
   const payload = (await response.json()) as T;
   return { ok: response.ok, status: response.status, payload };
 }
@@ -2151,23 +2171,56 @@ function CreatorPage({
     }
   };
 
-  const archiveSource = async (sourceId: string) => {
+  const archiveSource = async (source: RegistrySource) => {
     setIsSaving(true);
     setError('');
     setNotice('');
 
     try {
-      await requestJson<{ ok: true }>(`/api/sources/${sourceId}`, {
+      const archiveProof = await signSourceArchive(source);
+      await requestJson<{ ok: true }>(`/api/sources/${source.id}`, {
         method: 'DELETE',
+        body: JSON.stringify(archiveProof),
       });
-      setSources((current) => current.filter((source) => source.id !== sourceId));
-      if (editingSourceId === sourceId) cancelEditSource();
+      setSources((current) => current.filter((item) => item.id !== source.id));
+      if (editingSourceId === source.id) cancelEditSource();
       setNotice('Source archived.');
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
       setIsSaving(false);
     }
+  };
+
+  const signSourceArchive = async (source: RegistrySource) => {
+    const provider = getEthereumProvider();
+    if (!provider) {
+      throw new Error('Connect the payout wallet before archiving this source.');
+    }
+
+    let signer = connectedWallet.address;
+    if (!signer) {
+      signer = await onConnectWallet();
+    } else {
+      await ensureArcNetwork(provider);
+    }
+    if (!signer) {
+      throw new Error('Connect the payout wallet before archiving this source.');
+    }
+    if (signer.toLowerCase() !== source.wallet.toLowerCase()) {
+      throw new Error('Only the payout wallet can archive this source.');
+    }
+
+    const message = await buildSourceArchiveMessage(source);
+    const signature = await provider.request({
+      method: 'personal_sign',
+      params: [message, signer],
+    });
+
+    return {
+      ownerWallet: signer,
+      archiveSignature: String(signature),
+    };
   };
 
   const connectPayoutWallet = async () => {
@@ -2305,7 +2358,7 @@ function CreatorPage({
                   onChange={(event) =>
                     setDraft((current) => ({ ...current, title: event.target.value }))
                   }
-                  placeholder="Anatoli Kopadze on X: AI Agents"
+                  placeholder="Creator post title or article headline"
                   className="w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none placeholder:text-white/25 focus:border-[#5FA9FF]/80"
                 />
               </label>
@@ -2492,6 +2545,9 @@ function CreatorPage({
                   const belongsToDraftWallet =
                     creatorSources.length > 0 &&
                     source.wallet.toLowerCase() === draft.wallet.trim().toLowerCase();
+                  const isConnectedOwner =
+                    Boolean(connectedWallet.address) &&
+                    connectedWallet.address?.toLowerCase() === source.wallet.toLowerCase();
                   const isEditing = editingSourceId === source.id;
 
                   return (
@@ -2619,24 +2675,30 @@ function CreatorPage({
                             <p className="text-xs font-semibold text-white/42">
                               {source.kind}
                             </p>
-                            <div className="mt-3 flex gap-2 sm:justify-end">
-                              <button
-                                type="button"
-                                aria-label={`Edit ${source.title}`}
-                                onClick={() => beginEditSource(source)}
-                                className="rounded-[8px] border border-white/10 p-2 text-white/55 transition hover:border-white/35 hover:text-white"
-                              >
-                                <Pencil size={15} strokeWidth={2.25} />
-                              </button>
-                              <button
-                                type="button"
-                                aria-label={`Archive ${source.title}`}
-                                onClick={() => archiveSource(source.id)}
-                                className="rounded-[8px] border border-white/10 p-2 text-white/55 transition hover:border-[#F4845F]/50 hover:text-[#F7B49D]"
-                              >
-                                <Trash2 size={15} strokeWidth={2.25} />
-                              </button>
-                            </div>
+                            {isConnectedOwner ? (
+                              <div className="mt-3 flex gap-2 sm:justify-end">
+                                <button
+                                  type="button"
+                                  aria-label={`Edit ${source.title}`}
+                                  onClick={() => beginEditSource(source)}
+                                  className="rounded-[8px] border border-white/10 p-2 text-white/55 transition hover:border-white/35 hover:text-white"
+                                >
+                                  <Pencil size={15} strokeWidth={2.25} />
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-label={`Archive ${source.title}`}
+                                  onClick={() => archiveSource(source)}
+                                  className="rounded-[8px] border border-white/10 p-2 text-white/55 transition hover:border-[#F4845F]/50 hover:text-[#F7B49D]"
+                                >
+                                  <Trash2 size={15} strokeWidth={2.25} />
+                                </button>
+                              </div>
+                            ) : (
+                              <p className="mt-3 text-xs font-semibold text-white/34">
+                                View only
+                              </p>
+                            )}
                           </div>
                         </>
                       )}
