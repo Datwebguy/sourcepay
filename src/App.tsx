@@ -3,7 +3,6 @@ import {
   Activity,
   ArrowLeft,
   ArrowRight,
-  BadgeDollarSign,
   CheckCircle2,
   CircleDollarSign,
   Database,
@@ -578,6 +577,16 @@ function SourceVisual({ item }: { item: HeroSource }) {
   );
 }
 
+function SourcePayMark({ className = 'h-9 w-9' }: { className?: string }) {
+  return (
+    <img
+      src="/sourcepay-mark.svg"
+      alt="SourcePay"
+      className={`${className} rounded-[8px] shadow-lg shadow-black/20`}
+    />
+  );
+}
+
 function LandingPage({ onLaunch }: { onLaunch: () => void }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
@@ -630,9 +639,7 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
       </div>
 
       <div className="absolute left-4 top-6 z-[60] flex items-center gap-3 sm:left-8">
-        <div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-white text-white">
-          <BadgeDollarSign size={21} strokeWidth={2.25} />
-        </div>
+        <SourcePayMark />
         <span className="text-xs font-semibold uppercase tracking-[0.18em] text-white opacity-90">
           SourcePay
         </span>
@@ -951,9 +958,7 @@ function PlatformPage({
       <div className="mx-auto flex w-full max-w-[1500px] flex-col overflow-hidden rounded-[8px] border border-white/12 bg-[#0b0e11]/88 shadow-2xl shadow-black/45 backdrop-blur-xl">
         <header className="flex min-h-16 items-center justify-between gap-4 border-b border-white/10 bg-white/[0.025] px-4 sm:px-5">
           <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-white/5">
-              <BadgeDollarSign size={20} strokeWidth={2.25} />
-            </div>
+            <SourcePayMark />
             <div>
               <p className="text-sm font-bold">SourcePay</p>
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/42">

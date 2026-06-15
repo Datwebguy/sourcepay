@@ -1,0 +1,24 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#071018"/>
+  <circle cx="198" cy="94" r="260" fill="#5FA9FF" fill-opacity="0.2"/>
+  <circle cx="1054" cy="520" r="300" fill="#F4845F" fill-opacity="0.16"/>
+  <circle cx="876" cy="96" r="220" fill="#5FBF7A" fill-opacity="0.14"/>
+  <rect x="88" y="115" width="400" height="400" rx="92" fill="url(#paint0_linear)"/>
+  <rect x="116" y="143" width="344" height="344" rx="72" fill="#0B0E11"/>
+  <path d="M195 230C211 207.3 235.8 196 269.4 196H340C350.5 196 359 204.5 359 215V226.2C359 236.7 350.5 245.2 340 245.2H268C257.1 245.2 248.4 247.9 241.8 253.4C235.2 258.9 231.9 266 231.9 274.7C231.9 283.4 235.2 290.5 241.8 296C248.4 301.5 258 304.2 270.6 304.2H294.5C328.1 304.2 353.5 313 370.6 330.7C387.8 348.3 396.4 370.6 396.4 397.7V400C396.4 410.5 387.9 419 377.4 419H365.8C355.3 419 346.8 410.5 346.8 400V397.7C346.8 383.9 342.1 372.9 332.7 364.6C323.3 356.3 310.1 352.2 293.1 352.2H270.6C237.5 352.2 212.7 344.2 196.1 328.2C179.5 312.2 171.2 292.1 171.2 267.8C171.2 254 179.1 241.4 195 230Z" fill="white"/>
+  <path d="M185 419C174.5 419 166 410.5 166 400V388.8C166 378.3 174.5 369.8 185 369.8H275.8C286.7 369.8 295.5 367.1 302.1 361.6C308.7 356.1 312 349 312 340.3C312 331.6 308.7 324.5 302.1 319C295.5 313.5 285.9 310.8 273.3 310.8H251.4C219.4 310.8 194.9 302 177.8 284.3C160.7 266.7 152.1 244.7 152.1 218.2V215C152.1 204.5 160.6 196 171.1 196H182.7C193.2 196 201.7 204.5 201.7 215V218.2C201.7 232 206.1 242.8 215 250.5C223.8 258.2 236.5 262 253 262H273.3C307.5 262 333.1 270 350.2 286C367.3 302 375.9 322.4 375.9 347.2C375.9 368.7 367.1 386.1 349.5 399.3C331.8 412.4 307.3 419 275.8 419H185Z" fill="white" fill-opacity="0.92"/>
+  <circle cx="359" cy="220" r="32" fill="#5FA9FF"/>
+  <circle cx="359" cy="220" r="14" fill="#071018"/>
+  <path d="M184 386H246" stroke="#5FBF7A" stroke-width="22" stroke-linecap="round"/>
+  <text x="555" y="260" fill="white" font-family="Inter, Arial, sans-serif" font-size="92" font-weight="850" letter-spacing="-2">SourcePay</text>
+  <text x="559" y="325" fill="#9CCCFF" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="800" letter-spacing="5">AI CITATIONS THAT PAY</text>
+  <text x="558" y="398" fill="white" fill-opacity="0.76" font-family="Inter, Arial, sans-serif" font-size="29" font-weight="600">Wallet-signed sources. USDC on Arc.</text>
+  <path d="M560 474H1038" stroke="#5FA9FF" stroke-width="8" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="paint0_linear" x1="88" y1="115" x2="488" y2="515" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5FA9FF"/>
+      <stop offset="0.52" stop-color="#5FBF7A"/>
+      <stop offset="1" stop-color="#F4845F"/>
+    </linearGradient>
+  </defs>
+</svg>

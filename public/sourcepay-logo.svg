@@ -1,0 +1,20 @@
+<svg width="760" height="180" viewBox="0 0 760 180" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect x="8" y="8" width="164" height="164" rx="38" fill="#071018"/>
+  <rect x="20" y="20" width="140" height="140" rx="32" fill="url(#paint0_linear)"/>
+  <rect x="30" y="30" width="120" height="120" rx="26" fill="#0B0E11"/>
+  <path d="M56 60C63.5 49.3 75.4 44 91.7 44H121C126 44 130 48 130 53V58.5C130 63.5 126 67.5 121 67.5H91.2C85.9 67.5 81.7 68.8 78.5 71.5C75.3 74.1 73.7 77.6 73.7 82C73.7 86.3 75.3 89.8 78.5 92.5C81.7 95.1 86.4 96.5 92.6 96.5H103.8C120.4 96.5 132.9 100.7 141.3 109.2C149.8 117.6 154 128.4 154 141.5V143C154 148 150 152 145 152H139C134 152 130 148 130 143V141.5C130 134.8 127.7 129.5 123.2 125.5C118.6 121.5 112.2 119.5 103.8 119.5H92.6C76.3 119.5 64.1 115.7 56 108C47.9 100.2 43.8 90.5 43.8 78.8C43.8 72.2 47.9 65.9 56 60Z" fill="white"/>
+  <path d="M51 152C46 152 42 148 42 143V137.5C42 132.5 46 128.5 51 128.5H95.5C100.8 128.5 105.1 127.2 108.3 124.5C111.5 121.8 113.1 118.4 113.1 114C113.1 109.7 111.5 106.2 108.3 103.5C105.1 100.8 100.4 99.5 94.2 99.5H83.2C67.5 99.5 55.4 95.2 47 86.8C38.7 78.3 34.5 67.6 34.5 54.8V53C34.5 48 38.5 44 43.5 44H49.5C54.5 44 58.5 48 58.5 53V54.8C58.5 61.5 60.7 66.7 65 70.5C69.3 74.2 75.5 76 83.6 76H94.2C111 76 123.6 79.8 132 87.5C140.5 95.2 144.8 105 144.8 117C144.8 127.4 140.5 135.8 132 142.2C123.4 148.7 111.4 152 95.9 152H51Z" fill="white" fill-opacity="0.92"/>
+  <circle cx="130" cy="57" r="14" fill="#5FA9FF"/>
+  <circle cx="130" cy="57" r="6" fill="#071018"/>
+  <path d="M50 135H81" stroke="#5FBF7A" stroke-width="10" stroke-linecap="round"/>
+  <text x="218" y="91" fill="#071018" font-family="Inter, Arial, sans-serif" font-size="64" font-weight="850" letter-spacing="-1">SourcePay</text>
+  <text x="222" y="128" fill="#071018" fill-opacity="0.58" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="700" letter-spacing="4">AI CITATIONS THAT PAY</text>
+  <path d="M222 148H612" stroke="#5FA9FF" stroke-width="6" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="paint0_linear" x1="23" y1="20" x2="160" y2="160" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5FA9FF"/>
+      <stop offset="0.5" stop-color="#5FBF7A"/>
+      <stop offset="1" stop-color="#F4845F"/>
+    </linearGradient>
+  </defs>
+</svg>

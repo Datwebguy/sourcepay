@@ -20,6 +20,16 @@ SourcePay is a payment router for AI citations on Arc. Creators register wallet-
 - Arc Testnet
 - viem
 
+## Brand Assets
+
+SourcePay includes a small professional logo set in `public/`:
+
+- `sourcepay-mark.svg`: app header mark and favicon source.
+- `sourcepay-logo.svg`: horizontal wordmark for presentations or docs.
+- `sourcepay-x-avatar.png`: square profile image for X and other social accounts.
+- `sourcepay-social.png`: social preview/banner image.
+- `sourcepay-social.svg`: editable source for the social preview image.
+
 ## Local Setup
 
 ```bash
