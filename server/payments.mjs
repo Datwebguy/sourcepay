@@ -48,13 +48,17 @@ export function getPaymentReadiness(walletConfig) {
 
 export function getArcWalletNetwork() {
   const chain = CHAIN_CONFIGS.arcTestnet.chain;
+  const configuredRpcUrl = process.env.ARC_RPC_URL || process.env.RPC;
+  const rpcUrls = configuredRpcUrl
+    ? [configuredRpcUrl, ...chain.rpcUrls.default.http.filter((url) => url !== configuredRpcUrl)]
+    : chain.rpcUrls.default.http;
 
   return {
     chainId: chain.id,
     chainIdHex: `0x${chain.id.toString(16)}`,
     chainName: chain.name,
     nativeCurrency: chain.nativeCurrency,
-    rpcUrls: chain.rpcUrls.default.http,
+    rpcUrls,
     blockExplorerUrls: [chain.blockExplorers.default.url],
   };
 }

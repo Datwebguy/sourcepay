@@ -3306,8 +3306,6 @@ function App() {
         throw new Error('Install or open a browser wallet to connect.');
       }
 
-      await ensureArcNetwork(provider);
-
       const accounts = await provider.request({
         method: 'eth_requestAccounts',
       });
@@ -3315,6 +3313,8 @@ function App() {
       if (!address) {
         throw new Error('No wallet account was selected.');
       }
+
+      await ensureArcNetwork(provider);
 
       await requestJson<{ wallet: WalletConfig }>('/api/wallet', {
         method: 'POST',
