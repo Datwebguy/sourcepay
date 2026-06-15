@@ -953,12 +953,15 @@ function cleanXContent(content) {
   let value = normalizeSourceText(decodeHtml(content));
   value = value.replace(/:host\{[\s\S]*$/iu, ' ');
   value = value.replace(/\bnumber-flow-react\b[\s\S]*$/iu, ' ');
-  value = value.replace(
-    /^.*?\bPost\s+([A-Z][\s\S]*?)(?:\s+Read\s+\d+\s+replies|\s+New to X\?|\s+Relevant people|\s+Trending now|\s+Don'?t miss what'?s happening|\s+Terms of Service\b|$)/iu,
-    '$1',
-  );
+  value = value.replace(/^.*?\bPost\s+/iu, '');
   value = value
+    .replace(/^Log in\s+Sign up\s+/iu, '')
     .replace(/\s+Log in\s+Sign up\s+/giu, ' ')
+    .replace(/\s+\d+(?:\.\d+)?[KM]?\s+Views[\s\S]*$/iu, (match) => {
+      const views = match.match(/\d+(?:\.\d+)?[KM]?\s+Views/iu)?.[0];
+      return views ? ` ${views}` : '';
+    })
+    .replace(/\s+Read\s+\d+\s+replies[\s\S]*$/iu, ' ')
     .replace(/\s+Sign up with Google[\s\S]*$/iu, ' ')
     .replace(/\s+By signing up,[\s\S]*$/iu, ' ')
     .replace(/\s+Terms of Service[\s\S]*$/iu, ' ')
