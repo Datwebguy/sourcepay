@@ -1158,6 +1158,7 @@ function PlatformPage({
   onDisconnectWallet,
   isConnectingWallet,
   walletConnection,
+  sourceRefreshKey,
 }: {
   onBack: () => void;
   onOpenReceipt: (id: string, receipt?: Receipt) => void;
@@ -1168,6 +1169,7 @@ function PlatformPage({
   onDisconnectWallet: () => Promise<void>;
   isConnectingWallet: boolean;
   walletConnection: WalletConnectionState;
+  sourceRefreshKey: number;
 }) {
   const [question, setQuestion] = useState('');
   const [budget, setBudget] = useState(DEFAULT_REQUEST_BUDGET);
@@ -1324,7 +1326,7 @@ function PlatformPage({
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [sourceRefreshKey]);
 
   const refreshPaymentReadiness = async () => {
     const payload = await requestJson<{ payment: PaymentReadiness }>(
@@ -4339,6 +4341,7 @@ function App() {
   const [receiptId, setReceiptId] = useState(initialReceiptId ?? '');
   const [activeReceipt, setActiveReceipt] = useState<Receipt | null>(null);
   const [sourceId, setSourceId] = useState(initialSourceId ?? '');
+  const [sourceRefreshCounter, setSourceRefreshCounter] = useState(0);
   const [connectedWallet, setConnectedWallet] = useState<ConnectedWallet>({
     address: null,
     connector: null,
@@ -4412,10 +4415,14 @@ function App() {
   };
 
   const navigate = (nextView: AppView, nextId = '', nextReceipt: Receipt | null = null) => {
+    const previousView = view;
     setView(nextView);
     setReceiptId(nextView === 'receipt' ? nextId : '');
     setActiveReceipt(nextView === 'receipt' ? nextReceipt : null);
     setSourceId(nextView === 'source' ? nextId : '');
+    if (previousView === 'creator' && nextView === 'platform') {
+      setSourceRefreshCounter((current) => current + 1);
+    }
 
     if (nextView === 'receipt' && nextId) {
       const accessQuery =
@@ -4454,6 +4461,7 @@ function App() {
             onDisconnectWallet={disconnectWallet}
             isConnectingWallet={isConnectingWallet}
             walletConnection={walletConnection}
+            sourceRefreshKey={sourceRefreshCounter}
           />
         ) : view === 'creator' ? (
           <CreatorPage
