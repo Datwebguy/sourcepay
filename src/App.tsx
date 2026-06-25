@@ -265,6 +265,12 @@ type WalletAuthChallenge = {
 
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  enable?: () => Promise<string[]>;
+  connect?: (opts?: {
+    chains?: number[];
+    optionalChains?: number[];
+    rpcMap?: Record<string, string>;
+  }) => Promise<void>;
   disconnect?: () => Promise<void>;
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
   removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
@@ -484,7 +490,6 @@ async function createWalletConnectProvider() {
   );
   const provider = await WalletConnectEthereumProvider.init({
     projectId,
-    chains: [walletNetwork.chainId],
     optionalChains: [walletNetwork.chainId],
     rpcMap: {
       [walletNetwork.chainId]: walletNetwork.rpcUrls[0],
@@ -496,16 +501,18 @@ async function createWalletConnectProvider() {
       url: window.location.origin,
       icons: [`${window.location.origin}/sourcepay-mark.svg`],
     },
-    methods: [
+    optionalMethods: [
+      'eth_accounts',
       'eth_requestAccounts',
       'personal_sign',
+      'eth_sendTransaction',
       'eth_signTypedData_v4',
       'wallet_switchEthereumChain',
       'wallet_addEthereumChain',
       'eth_call',
       'eth_chainId',
     ],
-    events: ['accountsChanged', 'chainChanged', 'disconnect'],
+    optionalEvents: ['accountsChanged', 'chainChanged', 'disconnect', 'connect'],
   });
 
   walletConnectProvider = provider as EthereumProvider;
@@ -520,17 +527,29 @@ async function connectWalletProvider(connector: 'injected' | 'walletconnect') {
     throw new Error('Install a browser wallet or use WalletConnect to connect.');
   }
 
-  activeWalletProvider = provider;
-  const accounts = await provider.request({
-    method: 'eth_requestAccounts',
-  });
-  const address = Array.isArray(accounts) ? String(accounts[0] ?? '') : '';
-  if (!address) {
-    throw new Error('No wallet account was selected.');
-  }
+  try {
+    activeWalletProvider = provider;
+    const accounts =
+      connector === 'walletconnect' && provider.enable
+        ? await provider.enable()
+        : await provider.request({
+            method: 'eth_requestAccounts',
+          });
+    const address = Array.isArray(accounts) ? String(accounts[0] ?? '') : '';
+    if (!address) {
+      throw new Error('No wallet account was selected.');
+    }
 
-  await ensureArcNetwork(provider);
-  return { address, connector };
+    await ensureArcNetwork(provider);
+    return { address, connector };
+  } catch (error) {
+    if (connector === 'walletconnect') {
+      await provider.disconnect?.().catch(() => undefined);
+      walletConnectProvider = null;
+    }
+    activeWalletProvider = null;
+    throw error;
+  }
 }
 
 function useSmallViewport() {
