@@ -295,6 +295,12 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(proofPayload.proof.sources[0].displayWallet, `${creatorAccount.address.slice(0, 6)}...${creatorAccount.address.slice(-4)}`);
     assert.deepEqual(proofPayload.proof.settlements, []);
 
+    const proofVerificationPayload = await postJson('/api/proofs/verify', {
+      proof: proofPayload.proof,
+    });
+    assert.equal(proofVerificationPayload.verification.valid, true);
+    assert.equal(proofVerificationPayload.verification.receiptId, routePayload.receipt.id);
+
     const shortReceiptPayload = await getJson(
       `/api/receipts/${routePayload.receipt.id.slice(0, 8)}?${receiptAccess}`,
     );

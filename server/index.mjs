@@ -38,6 +38,8 @@ const defaultNetwork = 'Arc Testnet';
 const walletAuthChallengeTtlSeconds = 5 * 60;
 const walletAuthPurposes = new Set(['creator-earnings', 'buyer-receipts']);
 const rateLimitBuckets = new Map();
+const rateLimitExpiryQueue = [];
+let rateLimitExpiryIndex = 0;
 const rateLimitConfig = {
   authChallenge: { windowMs: 60_000, max: Number(process.env.SOURCEPAY_AUTH_LIMIT ?? 30) },
   sourcePreview: { windowMs: 60_000, max: Number(process.env.SOURCEPAY_PREVIEW_LIMIT ?? 12) },
@@ -153,6 +155,15 @@ db.exec(`
 
   INSERT OR IGNORE INTO wallet_config (id, network)
   VALUES (1, 'Arc Testnet');
+`);
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_sources_wallet ON sources(wallet COLLATE NOCASE);
+  CREATE INDEX IF NOT EXISTS idx_sources_kind_status_created_at ON sources(kind, status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_sources_owner_signed ON sources(owner_wallet, ownership_signature);
+  CREATE INDEX IF NOT EXISTS idx_selected_sources_run_id ON selected_sources(run_id);
+  CREATE INDEX IF NOT EXISTS idx_selected_sources_source_id ON selected_sources(source_id);
+  CREATE INDEX IF NOT EXISTS idx_research_runs_access_token ON research_runs(access_token);
 `);
 
 const sourceColumns = db
@@ -598,10 +609,12 @@ function checkRateLimit(request, group, options = {}) {
   const current = rateLimitBuckets.get(key);
 
   if (!current || current.resetAt <= now) {
+    const resetAt = now + config.windowMs;
     rateLimitBuckets.set(key, {
       count: 1,
-      resetAt: now + config.windowMs,
+      resetAt,
     });
+    rateLimitExpiryQueue.push({ key, resetAt });
     cleanupRateLimitBuckets(now);
     return { limited: false };
   }
@@ -618,9 +631,18 @@ function checkRateLimit(request, group, options = {}) {
 }
 
 function cleanupRateLimitBuckets(now) {
-  if (rateLimitBuckets.size < 5000) return;
-  for (const [key, bucket] of rateLimitBuckets) {
-    if (bucket.resetAt <= now) rateLimitBuckets.delete(key);
+  while (rateLimitExpiryIndex < rateLimitExpiryQueue.length) {
+    const entry = rateLimitExpiryQueue[rateLimitExpiryIndex];
+    if (entry.resetAt > now) break;
+
+    rateLimitExpiryIndex += 1;
+    const bucket = rateLimitBuckets.get(entry.key);
+    if (bucket?.resetAt <= now) rateLimitBuckets.delete(entry.key);
+  }
+
+  if (rateLimitExpiryIndex > 1000 && rateLimitExpiryIndex * 2 > rateLimitExpiryQueue.length) {
+    rateLimitExpiryQueue.splice(0, rateLimitExpiryIndex);
+    rateLimitExpiryIndex = 0;
   }
 }
 
@@ -1617,29 +1639,26 @@ function tokenize(text) {
     .filter((token) => token.length > 2 && !routeStopWords.has(token));
 }
 
-function scoreSource(source, questionTokens) {
+function scoreSource(source, questionTokens, questionPhrases) {
   const sourceText = `${source.title} ${source.content}`.toLowerCase();
   const sourceTokens = new Set(tokenize(sourceText));
-  const uniqueQuestionTokens = [...new Set(questionTokens)];
   let overlap = 0;
   let strongOverlap = 0;
 
-  for (const token of uniqueQuestionTokens) {
+  for (const token of questionTokens) {
     if (sourceTokens.has(token)) {
       overlap += 1;
       if (token.length >= 5) strongOverlap += 1;
     }
   }
 
-  const tokenScore = overlap / Math.max(uniqueQuestionTokens.length, 1);
-  const phraseScore = buildSearchPhrases(uniqueQuestionTokens).some((phrase) =>
-    sourceText.includes(phrase),
-  )
+  const tokenScore = overlap / Math.max(questionTokens.length, 1);
+  const phraseScore = questionPhrases.some((phrase) => sourceText.includes(phrase))
     ? 0.35
     : 0;
 
   if (overlap === 0) return 0;
-  if (uniqueQuestionTokens.length > 1 && strongOverlap === 0 && phraseScore === 0) return 0;
+  if (questionTokens.length > 1 && strongOverlap === 0 && phraseScore === 0) return 0;
 
   return tokenScore + phraseScore;
 }
@@ -1869,14 +1888,19 @@ function verifyReceiptProof(proof) {
     if (!passed) return { valid: false, reason: `${label} does not match.` };
   }
 
-  if (expected.sources.length !== proof.sources.length) {
+  const proofSourcesById = new Map(
+    proof.sources.map((source) => [String(source.sourceId), source]),
+  );
+  const proofSettlementsById = new Map(
+    proof.settlements.map((settlement) => [String(settlement.id), settlement]),
+  );
+
+  if (expected.sources.length !== proofSourcesById.size) {
     return { valid: false, reason: 'Source count does not match.' };
   }
 
   for (const expectedSource of expected.sources) {
-    const proofSource = proof.sources.find(
-      (source) => source.sourceId === expectedSource.sourceId,
-    );
+    const proofSource = proofSourcesById.get(expectedSource.sourceId);
     if (!proofSource) {
       return { valid: false, reason: 'Source proof is missing.' };
     }
@@ -1894,14 +1918,12 @@ function verifyReceiptProof(proof) {
     }
   }
 
-  if (expected.settlements.length !== proof.settlements.length) {
+  if (expected.settlements.length !== proofSettlementsById.size) {
     return { valid: false, reason: 'Settlement count does not match.' };
   }
 
   for (const expectedSettlement of expected.settlements) {
-    const proofSettlement = proof.settlements.find(
-      (settlement) => settlement.id === expectedSettlement.id,
-    );
+    const proofSettlement = proofSettlementsById.get(expectedSettlement.id);
     if (!proofSettlement) {
       return { valid: false, reason: 'Settlement proof is missing.' };
     }
@@ -1957,11 +1979,14 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
         'Add specific names, topics, or keywords so SourcePay can match the request to creator sources.',
     };
   }
+  const uniqueQuestionTokens = [...new Set(questionTokens)];
+  const questionPhrases = buildSearchPhrases(uniqueQuestionTokens);
+
   const eligible = statements.eligibleSources
     .all(JSON.stringify(normalizedKinds))
     .map((source) => ({
       ...source,
-      relevance: scoreSource(source, questionTokens),
+      relevance: scoreSource(source, uniqueQuestionTokens, questionPhrases),
     }))
     .filter((source) => source.relevance >= 0.25)
     .sort((left, right) => {
