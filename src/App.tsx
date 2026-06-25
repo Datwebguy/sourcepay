@@ -28,6 +28,7 @@ type ConsoleTab = 'Requests' | 'Sources' | 'Payments' | 'Policy' | 'Wallet';
 type Direction = 'next' | 'prev';
 type SourceKind = 'Article' | 'Social post' | 'Transcript';
 type HeroIcon = 'article' | 'social' | 'transcript' | 'receipt';
+type WalletConnector = 'injected' | 'walletconnect';
 
 type HeroSource = {
   id: string;
@@ -196,7 +197,7 @@ type SourcePreview = {
 
 type ConnectedWallet = {
   address: string | null;
-  connector?: 'injected' | 'walletconnect' | null;
+  connector?: WalletConnector | null;
 };
 
 type WalletBalanceCheck = {
@@ -276,6 +277,12 @@ type EthereumProvider = {
   removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
 };
 
+type WalletConnectionState = {
+  connector: WalletConnector | null;
+  message: string;
+  error: string;
+};
+
 type ErrorBoundaryProps = {
   children: ReactNode;
 };
@@ -294,6 +301,8 @@ declare global {
 const DEFAULT_TESTNET_FAUCET_URL = 'https://faucet.circle.com';
 let activeWalletProvider: EthereumProvider | null = null;
 let walletConnectProvider: EthereumProvider | null = null;
+let activeWalletProviderCleanup: (() => void) | null = null;
+const WALLETCONNECT_CONNECT_TIMEOUT_MS = 90_000;
 
 const HERO_SOURCES: HeroSource[] = [
   {
@@ -473,6 +482,59 @@ function getEthereumProvider() {
   return activeWalletProvider ?? getInjectedProvider();
 }
 
+function clearWalletProviderEvents() {
+  activeWalletProviderCleanup?.();
+  activeWalletProviderCleanup = null;
+}
+
+function bindWalletProviderEvents({
+  provider,
+  connector,
+  onAccountsChanged,
+  onDisconnected,
+}: {
+  provider: EthereumProvider;
+  connector: WalletConnector;
+  onAccountsChanged: (wallet: ConnectedWallet) => void;
+  onDisconnected: () => void;
+}) {
+  clearWalletProviderEvents();
+
+  if (!provider.on || !provider.removeListener) return;
+
+  const handleAccountsChanged = (...args: unknown[]) => {
+    const accounts = args[0];
+    const address = Array.isArray(accounts) ? String(accounts[0] ?? '') : '';
+    if (!address) {
+      onDisconnected();
+      return;
+    }
+    onAccountsChanged({ address, connector });
+  };
+  const handleDisconnect = () => {
+    onDisconnected();
+  };
+
+  provider.on('accountsChanged', handleAccountsChanged);
+  provider.on('disconnect', handleDisconnect);
+
+  activeWalletProviderCleanup = () => {
+    provider.removeListener?.('accountsChanged', handleAccountsChanged);
+    provider.removeListener?.('disconnect', handleDisconnect);
+  };
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+}
+
 async function createWalletConnectProvider() {
   const payload = await requestJson<{ config: SafeConfig }>('/api/config');
   const { walletNetwork } = payload.config;
@@ -519,7 +581,7 @@ async function createWalletConnectProvider() {
   return walletConnectProvider;
 }
 
-async function connectWalletProvider(connector: 'injected' | 'walletconnect') {
+async function connectWalletProvider(connector: WalletConnector) {
   const provider =
     connector === 'walletconnect' ? await createWalletConnectProvider() : getInjectedProvider();
 
@@ -529,12 +591,20 @@ async function connectWalletProvider(connector: 'injected' | 'walletconnect') {
 
   try {
     activeWalletProvider = provider;
-    const accounts =
+    const accountRequest =
       connector === 'walletconnect' && provider.enable
-        ? await provider.enable()
-        : await provider.request({
+        ? provider.enable()
+        : provider.request({
             method: 'eth_requestAccounts',
           });
+    const accounts =
+      connector === 'walletconnect'
+        ? await withTimeout(
+            accountRequest,
+            WALLETCONNECT_CONNECT_TIMEOUT_MS,
+            'WalletConnect did not complete. Close any open wallet prompt and try again.',
+          )
+        : await accountRequest;
     const address = Array.isArray(accounts) ? String(accounts[0] ?? '') : '';
     if (!address) {
       throw new Error('No wallet account was selected.');
@@ -1087,15 +1157,17 @@ function PlatformPage({
   onConnectWallet,
   onDisconnectWallet,
   isConnectingWallet,
+  walletConnection,
 }: {
   onBack: () => void;
   onOpenReceipt: (id: string, receipt?: Receipt) => void;
   onOpenCreator: () => void;
   onOpenSource: (id: string) => void;
   connectedWallet: ConnectedWallet;
-  onConnectWallet: (connector?: 'injected' | 'walletconnect') => Promise<string | null>;
+  onConnectWallet: (connector?: WalletConnector) => Promise<string | null>;
   onDisconnectWallet: () => Promise<void>;
   isConnectingWallet: boolean;
+  walletConnection: WalletConnectionState;
 }) {
   const [question, setQuestion] = useState('');
   const [budget, setBudget] = useState(DEFAULT_REQUEST_BUDGET);
@@ -1373,7 +1445,7 @@ function PlatformPage({
     }
   };
 
-  const connectWalletFromPage = async (connector?: 'injected' | 'walletconnect') => {
+  const connectWalletFromPage = async (connector?: WalletConnector) => {
     setError('');
     try {
       await onConnectWallet(connector);
@@ -2161,7 +2233,9 @@ function PlatformPage({
                             disabled={isConnectingWallet}
                             className="rounded-[8px] bg-white px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-45"
                           >
-                            {isConnectingWallet ? 'Connecting' : 'Browser wallet'}
+                            {walletConnection.connector === 'injected' && walletConnection.message
+                              ? walletConnection.message
+                              : 'Browser wallet'}
                           </button>
                           <button
                             type="button"
@@ -2169,7 +2243,9 @@ function PlatformPage({
                             disabled={isConnectingWallet}
                             className="rounded-[8px] border border-white/14 px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-white/72 transition hover:border-[#5FA9FF]/70 hover:text-[#9CCCFF] disabled:cursor-not-allowed disabled:opacity-45"
                           >
-                            WalletConnect
+                            {walletConnection.connector === 'walletconnect' && walletConnection.message
+                              ? walletConnection.message
+                              : 'WalletConnect'}
                           </button>
                         </>
                       )}
@@ -2191,6 +2267,18 @@ function PlatformPage({
                         </p>
                       </div>
                     )}
+                    {!connectedWallet.address && walletConnection.error && (
+                      <div className="rounded-[8px] border border-[#F4845F]/35 bg-[#F4845F]/12 p-3 text-xs font-semibold leading-relaxed text-[#F7B49D]">
+                        {walletConnection.error}
+                      </div>
+                    )}
+                    {!connectedWallet.address &&
+                      walletConnection.connector === 'walletconnect' &&
+                      walletConnection.message && (
+                        <div className="rounded-[8px] border border-[#5FA9FF]/20 bg-[#5FA9FF]/10 p-3 text-xs font-semibold leading-relaxed text-[#9CCCFF]">
+                          Approve the WalletConnect request in the modal or mobile wallet. If no modal appears, refresh the page and try WalletConnect again.
+                        </div>
+                      )}
                   </div>
                 </section>
 
@@ -2328,13 +2416,15 @@ function CreatorPage({
   onConnectWallet,
   onDisconnectWallet,
   isConnectingWallet,
+  walletConnection,
 }: {
   onBack: () => void;
   onOpenSource: (id: string) => void;
   connectedWallet: ConnectedWallet;
-  onConnectWallet: (connector?: 'injected' | 'walletconnect') => Promise<string | null>;
+  onConnectWallet: (connector?: WalletConnector) => Promise<string | null>;
   onDisconnectWallet: () => Promise<void>;
   isConnectingWallet: boolean;
+  walletConnection: WalletConnectionState;
 }) {
   const [sources, setSources] = useState<RegistrySource[]>([]);
   const [draft, setDraft] = useState<SourceDraft>({
@@ -2702,7 +2792,7 @@ function CreatorPage({
     };
   };
 
-  const connectPayoutWallet = async (connector?: 'injected' | 'walletconnect') => {
+  const connectPayoutWallet = async (connector?: WalletConnector) => {
     setError('');
     setNotice('');
 
@@ -2895,7 +2985,9 @@ function CreatorPage({
                     >
                       <Wallet size={13} strokeWidth={2.25} />
                       {isConnectingWallet
-                        ? 'Connecting'
+                        ? walletConnection.connector === 'injected'
+                          ? walletConnection.message || 'Connecting'
+                          : 'Connecting'
                           : connectedWallet.address
                             ? 'Use connected'
                             : 'Connect'}
@@ -2907,7 +2999,9 @@ function CreatorPage({
                         disabled={isConnectingWallet}
                         className="rounded-full border border-[#5FA9FF]/35 px-3 py-1 text-[11px] font-bold text-[#9CCCFF] transition hover:border-[#5FA9FF]/80 hover:text-white disabled:cursor-not-allowed disabled:opacity-45"
                       >
-                        WalletConnect
+                        {walletConnection.connector === 'walletconnect' && walletConnection.message
+                          ? walletConnection.message
+                          : 'WalletConnect'}
                       </button>
                     )}
                     {connectedWallet.address && (
@@ -2920,6 +3014,18 @@ function CreatorPage({
                       </button>
                     )}
                   </div>
+                  {!connectedWallet.address && walletConnection.error && (
+                    <p className="mt-2 rounded-[8px] border border-[#F4845F]/35 bg-[#F4845F]/12 px-3 py-2 text-xs font-semibold leading-relaxed text-[#F7B49D]">
+                      {walletConnection.error}
+                    </p>
+                  )}
+                  {!connectedWallet.address &&
+                    walletConnection.connector === 'walletconnect' &&
+                    walletConnection.message && (
+                      <p className="mt-2 rounded-[8px] border border-[#5FA9FF]/20 bg-[#5FA9FF]/10 px-3 py-2 text-xs font-semibold leading-relaxed text-[#9CCCFF]">
+                        Approve the WalletConnect request in the modal or mobile wallet. If no modal appears, refresh and try WalletConnect again.
+                      </p>
+                    )}
                 </div>
                 <input
                   value={draft.wallet}
@@ -3532,7 +3638,7 @@ function ReceiptPage({
   initialAccessToken?: string | null;
   onBack: () => void;
   connectedWallet: ConnectedWallet;
-  onConnectWallet: (connector?: 'injected' | 'walletconnect') => Promise<string | null>;
+  onConnectWallet: (connector?: WalletConnector) => Promise<string | null>;
   isConnectingWallet: boolean;
 }) {
   const [receipt, setReceipt] = useState<Receipt | null>(initialReceipt);
@@ -4238,19 +4344,60 @@ function App() {
     connector: null,
   });
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
+  const [walletConnection, setWalletConnection] = useState<WalletConnectionState>({
+    connector: null,
+    message: '',
+    error: '',
+  });
 
   useEffect(() => {
     setConnectedWallet({ address: null, connector: null });
   }, []);
 
-  const connectWallet = async (connector?: 'injected' | 'walletconnect') => {
+  const resetConnectedWallet = () => {
+    activeWalletProvider = null;
+    walletConnectProvider = null;
+    clearWalletProviderEvents();
+    setConnectedWallet({ address: null, connector: null });
+  };
+
+  const connectWallet = async (connector?: WalletConnector) => {
     setIsConnectingWallet(true);
+    const selectedConnector = connector ?? (getInjectedProvider() ? 'injected' : 'walletconnect');
+    setWalletConnection({
+      connector: selectedConnector,
+      message:
+        selectedConnector === 'walletconnect'
+          ? 'Opening WalletConnect'
+          : 'Opening wallet',
+      error: '',
+    });
 
     try {
-      const selectedConnector = connector ?? (getInjectedProvider() ? 'injected' : 'walletconnect');
       const wallet = await connectWalletProvider(selectedConnector);
       setConnectedWallet(wallet);
+      const provider = getEthereumProvider();
+      if (provider) {
+        bindWalletProviderEvents({
+          provider,
+          connector: wallet.connector ?? selectedConnector,
+          onAccountsChanged: setConnectedWallet,
+          onDisconnected: resetConnectedWallet,
+        });
+      }
+      setWalletConnection({ connector: null, message: '', error: '' });
       return wallet.address;
+    } catch (error) {
+      const message = (error as Error).message || 'Wallet connection failed.';
+      setWalletConnection({
+        connector: selectedConnector,
+        message: '',
+        error:
+          selectedConnector === 'walletconnect'
+            ? `WalletConnect failed: ${message}`
+            : message,
+      });
+      throw error;
     } finally {
       setIsConnectingWallet(false);
     }
@@ -4259,10 +4406,9 @@ function App() {
   const disconnectWallet = async () => {
     if (connectedWallet.connector === 'walletconnect' && activeWalletProvider?.disconnect) {
       await activeWalletProvider.disconnect().catch(() => undefined);
-      walletConnectProvider = null;
     }
-    activeWalletProvider = null;
-    setConnectedWallet({ address: null, connector: null });
+    resetConnectedWallet();
+    setWalletConnection({ connector: null, message: '', error: '' });
   };
 
   const navigate = (nextView: AppView, nextId = '', nextReceipt: Receipt | null = null) => {
@@ -4307,6 +4453,7 @@ function App() {
             onConnectWallet={connectWallet}
             onDisconnectWallet={disconnectWallet}
             isConnectingWallet={isConnectingWallet}
+            walletConnection={walletConnection}
           />
         ) : view === 'creator' ? (
           <CreatorPage
@@ -4316,6 +4463,7 @@ function App() {
             onConnectWallet={connectWallet}
             onDisconnectWallet={disconnectWallet}
             isConnectingWallet={isConnectingWallet}
+            walletConnection={walletConnection}
           />
         ) : view === 'source' ? (
           <SourcePage
