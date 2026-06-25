@@ -2705,14 +2705,14 @@ function CreatorPage({
             <div className="space-y-3 p-4">
               <label className="block">
                 <span className="mb-2 block text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
-                  Source URL
+                  Source URL (optional)
                 </span>
                 <input
                   value={draft.url}
                   onChange={(event) =>
                     setDraft((current) => ({ ...current, url: event.target.value }))
                   }
-                  placeholder="https://x.com/creator/status/..."
+                  placeholder="https://example.com/article-or-post"
                   className="w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none placeholder:text-white/25 focus:border-[#5FA9FF]/80"
                 />
               </label>
