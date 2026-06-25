@@ -2164,6 +2164,7 @@ async function handleRequest(request, response) {
             usdc: process.env.SOURCEPAY_USDC_FAUCET_URL || 'https://faucet.circle.com',
           },
           walletNetwork: getArcWalletNetwork(),
+          walletConnectProjectId: process.env.SOURCEPAY_WALLETCONNECT_PROJECT_ID || '',
         },
       });
       return;

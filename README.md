@@ -82,6 +82,7 @@ SOURCEPAY_NETWORK="Arc Testnet"
 ARC_RPC_URL=
 SOURCEPAY_ARC_FAUCET_URL=
 SOURCEPAY_USDC_FAUCET_URL=
+SOURCEPAY_WALLETCONNECT_PROJECT_ID=
 ```
 
 Optional rate-limit overrides:
@@ -99,13 +100,15 @@ SOURCEPAY_PROOF_VERIFY_LIMIT=30
 
 `ARC_RPC_URL` should point to the Arc RPC endpoint used for the event. Faucet URLs should point to the official Arc testnet and USDC claim pages for the event. If faucet URLs are not configured, SourcePay falls back to Circle's faucet.
 
+`SOURCEPAY_WALLETCONNECT_PROJECT_ID` is the Reown/WalletConnect project ID. It enables WalletConnect QR/app connections for mobile wallets such as OKX Wallet. Browser-injected wallets still work without it.
+
 ## Main User Flows
 
 ### 1. Creator Source Registration
 
 1. Open SourcePay.
 2. Open `Creator portal`.
-3. Connect the creator payout wallet.
+3. Connect the creator payout wallet with `Browser wallet` or `WalletConnect`.
 4. Enter a source URL or paste source material.
 5. Choose the source class: `Article`, `Social post`, or `Transcript`.
 6. Set the USDC citation price.
@@ -118,7 +121,7 @@ The source is registered only if the signature matches the payout wallet and the
 ### 2. Buyer Request Routing
 
 1. Open the `Requests` tab.
-2. Connect the buyer wallet if the buyer wants receipt recovery.
+2. Connect the buyer wallet with `Browser wallet` or `WalletConnect` if the buyer wants receipt recovery.
 3. Enter the research objective.
 4. Set max spend.
 5. Choose eligible source types.
@@ -130,7 +133,7 @@ SourcePay selects matching wallet-signed creator sources within budget and creat
 
 1. Open the `Payments` tab.
 2. Click `My receipts`.
-3. Connect the buyer wallet.
+3. Connect the buyer wallet with `Browser wallet` or `WalletConnect`.
 4. Sign the buyer receipt challenge.
 
 Only receipts created by that buyer wallet are returned. Private unpaid receipts include their access token so the buyer can reopen and pay them.
@@ -138,7 +141,7 @@ Only receipts created by that buyer wallet are returned. Private unpaid receipts
 ### 4. Pay The Receipt
 
 1. Open a receipt.
-2. Connect the buyer wallet.
+2. Connect the buyer wallet with `Browser wallet` or `WalletConnect`.
 3. Switch to Arc Testnet if prompted.
 4. Review selected sources and total USDC amount.
 5. Click `Connect and pay` / payment action.
@@ -196,6 +199,7 @@ fly volumes create sourcepay_data --size 1 --region iad
 fly secrets set ARC_RPC_URL="https://..."
 fly secrets set SOURCEPAY_ARC_FAUCET_URL="https://..."
 fly secrets set SOURCEPAY_USDC_FAUCET_URL="https://..."
+fly secrets set SOURCEPAY_WALLETCONNECT_PROJECT_ID="..."
 ```
 
 5. Deploy:
