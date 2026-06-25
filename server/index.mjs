@@ -15,6 +15,7 @@ import {
   createReceiptSigningRequests,
   getArcWalletNetwork,
   getPaymentReadiness,
+  getPaymentReadinessDetails,
   isEvmAddress,
 } from './payments.mjs';
 
@@ -31,7 +32,28 @@ const db = new DatabaseSync(dbPath);
 const sourceKinds = new Set(['Article', 'Social post', 'Transcript']);
 const maxSourcePreviewBytes = 500_000;
 const maxSourcePreviewRedirects = 3;
+const maxPublicSourceContentLength = 360;
 const minUsdcAmount = 1;
+const defaultNetwork = 'Arc Testnet';
+const walletAuthChallengeTtlSeconds = 5 * 60;
+const walletAuthPurposes = new Set(['creator-earnings', 'buyer-receipts']);
+const rateLimitBuckets = new Map();
+const rateLimitConfig = {
+  authChallenge: { windowMs: 60_000, max: Number(process.env.SOURCEPAY_AUTH_LIMIT ?? 30) },
+  sourcePreview: { windowMs: 60_000, max: Number(process.env.SOURCEPAY_PREVIEW_LIMIT ?? 12) },
+  sourceWrite: { windowMs: 60_000, max: Number(process.env.SOURCEPAY_SOURCE_WRITE_LIMIT ?? 20) },
+  route: { windowMs: 60_000, max: Number(process.env.SOURCEPAY_ROUTE_LIMIT ?? 20) },
+  privateRead: { windowMs: 60_000, max: Number(process.env.SOURCEPAY_PRIVATE_READ_LIMIT ?? 60) },
+  paymentRequirements: {
+    windowMs: 60_000,
+    max: Number(process.env.SOURCEPAY_PAYMENT_REQUIREMENTS_LIMIT ?? 60),
+  },
+  paymentSubmit: {
+    windowMs: 60_000,
+    max: Number(process.env.SOURCEPAY_PAYMENT_SUBMIT_LIMIT ?? 20),
+  },
+  proofVerify: { windowMs: 60_000, max: Number(process.env.SOURCEPAY_PROOF_VERIFY_LIMIT ?? 30) },
+};
 
 class ClientRequestError extends Error {
   constructor(message, status = 400) {
@@ -63,10 +85,12 @@ db.exec(`
     question TEXT NOT NULL,
     budget REAL NOT NULL CHECK (budget > 0),
     total_spend REAL NOT NULL DEFAULT 0,
+    buyer_wallet TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'quoted',
     payment_status TEXT NOT NULL DEFAULT 'quoted',
     rail TEXT NOT NULL DEFAULT 'x402',
-    network TEXT NOT NULL DEFAULT 'Arc',
+    network TEXT NOT NULL DEFAULT 'Arc Testnet',
+    access_token TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -89,20 +113,46 @@ db.exec(`
     status TEXT NOT NULL,
     reason TEXT NOT NULL DEFAULT '',
     rail TEXT NOT NULL DEFAULT 'x402',
-    network TEXT NOT NULL DEFAULT 'Arc',
+    network TEXT NOT NULL DEFAULT 'Arc Testnet',
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS payment_settlements (
+    id TEXT PRIMARY KEY,
+    attempt_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    payer TEXT NOT NULL DEFAULT '',
+    pay_to TEXT NOT NULL DEFAULT '',
+    amount TEXT NOT NULL DEFAULT '',
+    transaction_id TEXT NOT NULL DEFAULT '',
+    network TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (attempt_id) REFERENCES payment_attempts(id) ON DELETE CASCADE,
     FOREIGN KEY (run_id) REFERENCES research_runs(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS wallet_config (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     agent_wallet TEXT,
-    network TEXT NOT NULL DEFAULT 'Arc',
+    network TEXT NOT NULL DEFAULT 'Arc Testnet',
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS auth_challenges (
+    id TEXT PRIMARY KEY,
+    wallet TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    message TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    consumed_at INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+  );
+
   INSERT OR IGNORE INTO wallet_config (id, network)
-  VALUES (1, 'Arc');
+  VALUES (1, 'Arc Testnet');
 `);
 
 const sourceColumns = db
@@ -135,7 +185,13 @@ if (!runColumns.includes('rail')) {
   db.exec("ALTER TABLE research_runs ADD COLUMN rail TEXT NOT NULL DEFAULT 'x402'");
 }
 if (!runColumns.includes('network')) {
-  db.exec("ALTER TABLE research_runs ADD COLUMN network TEXT NOT NULL DEFAULT 'Arc'");
+  db.exec("ALTER TABLE research_runs ADD COLUMN network TEXT NOT NULL DEFAULT 'Arc Testnet'");
+}
+if (!runColumns.includes('access_token')) {
+  db.exec("ALTER TABLE research_runs ADD COLUMN access_token TEXT");
+}
+if (!runColumns.includes('buyer_wallet')) {
+  db.exec("ALTER TABLE research_runs ADD COLUMN buyer_wallet TEXT NOT NULL DEFAULT ''");
 }
 
 const selectedSourceColumns = db
@@ -170,6 +226,24 @@ const statements = {
       created_at AS createdAt
     FROM sources
     WHERE status = 'registered'
+    ORDER BY datetime(created_at) DESC
+  `),
+  listSourcesByWallet: db.prepare(`
+    SELECT
+      id,
+      title,
+      kind,
+      wallet,
+      price,
+      content,
+      owner_wallet AS ownerWallet,
+      ownership_signature AS ownershipSignature,
+      ownership_message AS ownershipMessage,
+      status,
+      created_at AS createdAt
+    FROM sources
+    WHERE status = 'registered'
+      AND lower(wallet) = lower(?)
     ORDER BY datetime(created_at) DESC
   `),
   insertSource: db.prepare(`
@@ -241,8 +315,8 @@ const statements = {
     ORDER BY datetime(created_at) ASC
   `),
   insertRun: db.prepare(`
-    INSERT INTO research_runs (id, question, budget, total_spend)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO research_runs (id, question, budget, total_spend, access_token, buyer_wallet)
+    VALUES (?, ?, ?, ?, ?, ?)
   `),
   insertSelectedSource: db.prepare(`
     INSERT INTO selected_sources (
@@ -267,6 +341,8 @@ const statements = {
       payment_status AS paymentStatus,
       rail,
       network,
+      access_token AS accessToken,
+      buyer_wallet AS buyerWallet,
       created_at AS createdAt
     FROM research_runs
     WHERE id = ?
@@ -281,6 +357,8 @@ const statements = {
       payment_status AS paymentStatus,
       rail,
       network,
+      access_token AS accessToken,
+      buyer_wallet AS buyerWallet,
       created_at AS createdAt
     FROM research_runs
     WHERE id LIKE ? || '%'
@@ -293,6 +371,9 @@ const statements = {
       COALESCE(NULLIF(ss.kind, ''), s.kind) AS kind,
       COALESCE(NULLIF(ss.wallet, ''), s.wallet) AS wallet,
       COALESCE(NULLIF(ss.content, ''), s.content) AS content,
+      s.owner_wallet AS ownerWallet,
+      s.ownership_signature AS ownershipSignature,
+      s.ownership_message AS ownershipMessage,
       ss.price,
       COALESCE(s.status, 'archived') AS status,
       ss.rank
@@ -318,10 +399,75 @@ const statements = {
     INSERT INTO payment_attempts (id, run_id, status, reason, rail, network)
     VALUES (?, ?, ?, ?, ?, ?)
   `),
+  listPaymentSettlements: db.prepare(`
+    SELECT
+      id,
+      attempt_id AS attemptId,
+      run_id AS runId,
+      source_id AS sourceId,
+      payer,
+      pay_to AS payTo,
+      amount,
+      transaction_id AS transactionId,
+      network,
+      created_at AS createdAt
+    FROM payment_settlements
+    WHERE run_id = ?
+    ORDER BY datetime(created_at) DESC
+  `),
+  insertPaymentSettlement: db.prepare(`
+    INSERT INTO payment_settlements (
+      id,
+      attempt_id,
+      run_id,
+      source_id,
+      payer,
+      pay_to,
+      amount,
+      transaction_id,
+      network
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `),
   updateRunPaymentStatus: db.prepare(`
     UPDATE research_runs
     SET payment_status = ?
     WHERE id = ?
+  `),
+  insertAuthChallenge: db.prepare(`
+    INSERT INTO auth_challenges (
+      id,
+      wallet,
+      purpose,
+      nonce,
+      message,
+      expires_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+  `),
+  getAuthChallenge: db.prepare(`
+    SELECT
+      id,
+      wallet,
+      purpose,
+      nonce,
+      message,
+      expires_at AS expiresAt,
+      consumed_at AS consumedAt,
+      created_at AS createdAt
+    FROM auth_challenges
+    WHERE id = ?
+  `),
+  consumeAuthChallenge: db.prepare(`
+    UPDATE auth_challenges
+    SET consumed_at = unixepoch()
+    WHERE id = ?
+      AND consumed_at IS NULL
+  `),
+  deleteExpiredAuthChallenges: db.prepare(`
+    DELETE FROM auth_challenges
+    WHERE expires_at < unixepoch() - 3600
+       OR consumed_at < unixepoch() - 3600
   `),
   listRuns: db.prepare(`
     SELECT
@@ -333,10 +479,30 @@ const statements = {
       payment_status AS paymentStatus,
       rail,
       network,
+      buyer_wallet AS buyerWallet,
       created_at AS createdAt
     FROM research_runs
+    WHERE payment_status IN ('paid', 'settled')
     ORDER BY datetime(created_at) DESC
     LIMIT 50
+  `),
+  listRunsByBuyer: db.prepare(`
+    SELECT
+      id,
+      question,
+      budget,
+      total_spend AS totalSpend,
+      status,
+      payment_status AS paymentStatus,
+      rail,
+      network,
+      access_token AS accessToken,
+      buyer_wallet AS buyerWallet,
+      created_at AS createdAt
+    FROM research_runs
+    WHERE lower(buyer_wallet) = lower(?)
+    ORDER BY datetime(created_at) DESC
+    LIMIT 100
   `),
   listCreatorCitations: db.prepare(`
     SELECT
@@ -345,6 +511,7 @@ const statements = {
       rr.payment_status AS paymentStatus,
       rr.rail,
       rr.network,
+      rr.buyer_wallet AS buyerWallet,
       rr.created_at AS createdAt,
       ss.source_id AS sourceId,
       ss.rank,
@@ -365,6 +532,7 @@ const statements = {
       rr.payment_status AS paymentStatus,
       rr.rail,
       rr.network,
+      rr.buyer_wallet AS buyerWallet,
       rr.created_at AS createdAt,
       ss.rank,
       ss.price
@@ -381,21 +549,6 @@ const statements = {
       WHERE selected_sources.run_id = research_runs.id
     )
   `),
-  getWalletConfig: db.prepare(`
-    SELECT agent_wallet AS agentWallet, network, updated_at AS updatedAt
-    FROM wallet_config
-    WHERE id = 1
-  `),
-  updateWalletConfig: db.prepare(`
-    UPDATE wallet_config
-    SET agent_wallet = ?, network = ?, updated_at = datetime('now')
-    WHERE id = 1
-  `),
-  clearWalletConfig: db.prepare(`
-    UPDATE wallet_config
-    SET agent_wallet = NULL, updated_at = datetime('now')
-    WHERE id = 1
-  `),
 };
 
 statements.deleteEmptyRuns.run();
@@ -409,6 +562,82 @@ function sendJson(response, status, body) {
     'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   });
   response.end(JSON.stringify(body));
+}
+
+function sendRateLimited(response, result) {
+  response.writeHead(429, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+    'Retry-After': String(result.retryAfter),
+  });
+  response.end(
+    JSON.stringify({
+      error: 'Too many requests. Please wait and try again.',
+      retryAfter: result.retryAfter,
+    }),
+  );
+}
+
+function getClientIp(request) {
+  const forwarded = String(request.headers['fly-client-ip'] ?? request.headers['x-forwarded-for'] ?? '')
+    .split(',')[0]
+    .trim();
+  return forwarded || request.socket?.remoteAddress || 'unknown';
+}
+
+function checkRateLimit(request, group, options = {}) {
+  const config = rateLimitConfig[group];
+  if (!config || config.max <= 0) return { limited: false };
+
+  const keySuffix = options.key ? `:${options.key}` : '';
+  const key = `${group}:${getClientIp(request)}${keySuffix}`;
+  const now = Date.now();
+  const current = rateLimitBuckets.get(key);
+
+  if (!current || current.resetAt <= now) {
+    rateLimitBuckets.set(key, {
+      count: 1,
+      resetAt: now + config.windowMs,
+    });
+    cleanupRateLimitBuckets(now);
+    return { limited: false };
+  }
+
+  current.count += 1;
+  if (current.count > config.max) {
+    return {
+      limited: true,
+      retryAfter: Math.max(1, Math.ceil((current.resetAt - now) / 1000)),
+    };
+  }
+
+  return { limited: false };
+}
+
+function cleanupRateLimitBuckets(now) {
+  if (rateLimitBuckets.size < 5000) return;
+  for (const [key, bucket] of rateLimitBuckets) {
+    if (bucket.resetAt <= now) rateLimitBuckets.delete(key);
+  }
+}
+
+function applyRateLimit(request, response, group, options = {}) {
+  const result = checkRateLimit(request, group, options);
+  if (result.limited) {
+    const url = new URL(request.url ?? '/', `http://${request.headers.host}`);
+    logEvent('warn', 'rate_limit.hit', {
+      ...requestLogFields(request, url),
+      group,
+      key: options.key ? maskIdentifier(options.key) : '',
+      retryAfter: result.retryAfter,
+    });
+    sendRateLimited(response, result);
+    return true;
+  }
+  return false;
 }
 
 function sendHtml(response, status, body) {
@@ -476,7 +705,7 @@ function pathSeparator() {
 }
 
 function renderBackendHome({ sourceCount, wallet, payment }) {
-  const walletState = wallet.ready ? 'Ready' : 'Needs wallet';
+  const walletState = wallet.ready ? 'Connected in browser' : 'Browser only';
   const paymentState = payment.ready ? 'Ready' : 'Action needed';
 
   return `<!doctype html>
@@ -588,7 +817,7 @@ function renderBackendHome({ sourceCount, wallet, payment }) {
     </header>
     <section class="grid">
       <div class="card"><span class="label">Sources</span><span class="value">${sourceCount}</span></div>
-      <div class="card"><span class="label">Paying wallet</span><span class="value">${walletState}</span></div>
+      <div class="card"><span class="label">Payer wallet</span><span class="value">${walletState}</span></div>
       <div class="card"><span class="label">Settlement</span><span class="value">${paymentState}</span></div>
     </section>
     <section class="links">
@@ -600,13 +829,14 @@ function renderBackendHome({ sourceCount, wallet, payment }) {
 }
 
 function normalizeSource(row) {
+  const fullContent = row.content ?? '';
   const source = {
     id: row.id,
     title: row.title,
     kind: row.kind,
     wallet: row.wallet,
     price: row.price,
-    content: row.content,
+    content: fullContent,
     ownerWallet: row.ownerWallet ?? null,
     ownershipVerified: Boolean(row.ownershipSignature),
     status: row.status,
@@ -615,8 +845,15 @@ function normalizeSource(row) {
 
   return {
     ...source,
+    content: publicSourceContentPreview(fullContent),
     fingerprint: sourceFingerprint(source),
   };
+}
+
+function publicSourceContentPreview(value) {
+  const normalized = normalizeSourceText(value);
+  if (normalized.length <= maxPublicSourceContentLength) return normalized;
+  return `${normalized.slice(0, maxPublicSourceContentLength).trimEnd()}...`;
 }
 
 async function readBody(request) {
@@ -730,6 +967,139 @@ function buildSourceArchiveMessage(source) {
     `Title: ${normalized.title}`,
     `Source fingerprint: ${normalized.fingerprint}`,
   ].join('\n');
+}
+
+function formatAuthPurpose(purpose) {
+  if (purpose === 'creator-earnings') return 'Creator earnings';
+  if (purpose === 'buyer-receipts') return 'Buyer receipts';
+  return String(purpose ?? '').trim();
+}
+
+function buildWalletAuthMessage({ wallet, purpose, nonce, expiresAt }) {
+  return [
+    'SourcePay wallet authorization',
+    `Purpose: ${formatAuthPurpose(purpose)}`,
+    `Payout wallet: ${String(wallet ?? '').trim()}`,
+    `Network: ${getArcWalletNetwork().chainName}`,
+    `Nonce: ${nonce}`,
+    `Expires at: ${new Date(expiresAt * 1000).toISOString()}`,
+  ].join('\n');
+}
+
+function createWalletAuthChallenge(input) {
+  const wallet = String(input.wallet ?? '').trim();
+  const purpose = String(input.purpose ?? '').trim();
+
+  if (!wallet) return { status: 400, error: 'Wallet is required.' };
+  if (!isEvmAddress(wallet)) return { status: 400, error: 'Wallet must be a valid EVM address.' };
+  if (!walletAuthPurposes.has(purpose)) {
+    return { status: 400, error: 'Unsupported wallet authorization purpose.' };
+  }
+
+  statements.deleteExpiredAuthChallenges.run();
+
+  const id = randomUUID();
+  const nonce = randomUUID();
+  const expiresAt = Math.floor(Date.now() / 1000) + walletAuthChallengeTtlSeconds;
+  const message = buildWalletAuthMessage({ wallet, purpose, nonce, expiresAt });
+
+  statements.insertAuthChallenge.run(id, wallet, purpose, nonce, message, expiresAt);
+
+  return {
+    value: {
+      id,
+      wallet,
+      purpose,
+      message,
+      expiresAt,
+    },
+  };
+}
+
+async function validateCreatorEarningsAccess(input) {
+  const parsed = await validateWalletChallengeAccess(input, {
+    purpose: 'creator-earnings',
+    walletLabel: 'Payout wallet',
+    missingWalletError: 'Payout wallet is required.',
+    missingChallengeError: 'Request a fresh wallet challenge before viewing earnings.',
+    missingSignatureError: 'Sign with the payout wallet before viewing earnings.',
+    mismatchError: 'The signing wallet must match the payout wallet.',
+    invalidSignatureError: 'Wallet signature did not authorize earnings access.',
+  });
+  if (parsed.error) return parsed;
+
+  return { value: { wallet: parsed.value.wallet } };
+}
+
+async function validateBuyerReceiptsAccess(input) {
+  const parsed = await validateWalletChallengeAccess(input, {
+    purpose: 'buyer-receipts',
+    walletLabel: 'Buyer wallet',
+    missingWalletError: 'Buyer wallet is required.',
+    missingChallengeError: 'Request a fresh wallet challenge before viewing buyer receipts.',
+    missingSignatureError: 'Sign with the buyer wallet before viewing receipts.',
+    mismatchError: 'The signing wallet must match the buyer wallet.',
+    invalidSignatureError: 'Wallet signature did not authorize receipt access.',
+  });
+  if (parsed.error) return parsed;
+
+  return { value: { wallet: parsed.value.wallet } };
+}
+
+async function validateWalletChallengeAccess(input, options) {
+  const wallet = String(input.wallet ?? '').trim();
+  const ownerWallet = String(input.ownerWallet ?? '').trim();
+  const authSignature = String(input.authSignature ?? '').trim();
+  const challengeId = String(input.challengeId ?? '').trim();
+
+  if (!wallet) return { status: 400, error: options.missingWalletError };
+  if (!isEvmAddress(wallet)) {
+    return { status: 400, error: `${options.walletLabel} must be a valid EVM address.` };
+  }
+  if (!challengeId) {
+    return { status: 401, error: options.missingChallengeError };
+  }
+  if (!ownerWallet || !authSignature) {
+    return { status: 401, error: options.missingSignatureError };
+  }
+  if (ownerWallet.toLowerCase() !== wallet.toLowerCase()) {
+    return { status: 403, error: options.mismatchError };
+  }
+
+  const challenge = statements.getAuthChallenge.get(challengeId);
+  const now = Math.floor(Date.now() / 1000);
+  if (!challenge) {
+    return { status: 401, error: 'Wallet challenge was not found. Request a new one.' };
+  }
+  if (challenge.purpose !== options.purpose) {
+    return { status: 403, error: 'Wallet challenge purpose does not match this action.' };
+  }
+  if (challenge.wallet.toLowerCase() !== wallet.toLowerCase()) {
+    return { status: 403, error: 'Wallet challenge does not belong to this payout wallet.' };
+  }
+  if (challenge.consumedAt) {
+    return { status: 401, error: 'Wallet challenge has already been used. Request a new one.' };
+  }
+  if (Number(challenge.expiresAt) < now) {
+    return { status: 401, error: 'Wallet challenge expired. Request a new one.' };
+  }
+
+  const verified = await verifyMessage({
+    address: wallet,
+    message: challenge.message,
+    signature: authSignature,
+  }).catch(() => false);
+
+  if (!verified) {
+    return { status: 403, error: options.invalidSignatureError };
+  }
+
+  const consumed = statements.consumeAuthChallenge.run(challenge.id);
+  if (consumed.changes !== 1) {
+    return { status: 401, error: 'Wallet challenge has already been used. Request a new one.' };
+  }
+
+  return { value: { wallet } };
 }
 
 async function validateSourceArchive(input, source) {
@@ -1103,19 +1473,56 @@ function readableUrlTitle(url) {
     .slice(0, 120) || url.hostname;
 }
 
-function normalizeWalletConfig(row) {
-  return {
-    agentWallet: row.agentWallet,
-    network: row.network,
-    ready: Boolean(row.agentWallet),
-    updatedAt: row.updatedAt,
-  };
+function normalizeNetworkName(value) {
+  const network = String(value ?? '').trim();
+  if (!network || network.toLowerCase() === 'arc') return defaultNetwork;
+  return network;
 }
 
 function maskAddress(value) {
   if (!value) return '';
   if (value.length <= 12) return value;
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
+function maskIdentifier(value) {
+  const text = String(value ?? '');
+  if (!text) return '';
+  if (text.length <= 12) return text;
+  return `${text.slice(0, 8)}...${text.slice(-6)}`;
+}
+
+function logEvent(level, event, fields = {}) {
+  const payload = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...fields,
+  };
+  const line = JSON.stringify(payload);
+  if (level === 'error') {
+    console.error(line);
+  } else if (level === 'warn') {
+    console.warn(line);
+  } else {
+    console.log(line);
+  }
+}
+
+function logError(event, error, fields = {}) {
+  logEvent('error', event, {
+    ...fields,
+    errorName: error?.name ?? 'Error',
+    errorMessage: error?.message ?? String(error),
+  });
+}
+
+function requestLogFields(request, url) {
+  return {
+    method: request.method,
+    path: url.pathname,
+    ip: getClientIp(request),
+  };
 }
 
 function sourceFingerprint(source) {
@@ -1139,7 +1546,9 @@ function normalizeRun(row) {
     status: row.status ?? 'quoted',
     paymentStatus: row.paymentStatus ?? 'quoted',
     rail: row.rail ?? 'x402',
-    network: row.network ?? 'Arc',
+    network: normalizeNetworkName(row.network),
+    accessToken: row.accessToken ?? null,
+    buyerWallet: row.buyerWallet ?? '',
     createdAt: row.createdAt,
   };
 }
@@ -1157,18 +1566,6 @@ function findRun(identifier) {
   }
 
   return null;
-}
-
-function validateWalletConfig(input) {
-  const agentWallet = String(input.agentWallet ?? '').trim();
-  const network = String(input.network ?? 'Arc').trim() || 'Arc';
-
-  if (!agentWallet) return { error: 'Connect a wallet first.' };
-  if (!isEvmAddress(agentWallet)) {
-    return { error: 'Connect a valid wallet address.' };
-  }
-
-  return { value: { agentWallet, network } };
 }
 
 const routeStopWords = new Set([
@@ -1255,16 +1652,35 @@ function buildSearchPhrases(tokens) {
   return phrases;
 }
 
-function buildReceipt(runId) {
+function isPublicReceiptStatus(status) {
+  return status === 'paid' || status === 'settled';
+}
+
+function buildReceipt(runId, options = {}) {
   const run = findRun(runId);
   if (!run) return null;
   const normalizedRun = normalizeRun(run);
+  const hasAccess =
+    options.allowPrivate ||
+    isPublicReceiptStatus(normalizedRun.paymentStatus) ||
+    (normalizedRun.accessToken &&
+      options.accessToken &&
+      normalizedRun.accessToken === options.accessToken);
 
-  return {
+  if (!hasAccess) return null;
+
+  const receipt = {
     ...normalizedRun,
     sources: statements.getRunSources.all(normalizedRun.id).map(normalizeSource),
     paymentAttempts: statements.listPaymentAttempts.all(normalizedRun.id),
+    paymentSettlements: statements.listPaymentSettlements.all(normalizedRun.id),
   };
+
+  if (!options.includeAccessToken) {
+    delete receipt.accessToken;
+  }
+
+  return receipt;
 }
 
 function buildReceiptProof(receipt) {
@@ -1283,7 +1699,8 @@ function buildReceiptProof(receipt) {
       rank: source.rank,
       title: source.title,
       kind: source.kind,
-      wallet: maskAddress(source.wallet),
+      wallet: source.wallet,
+      displayWallet: maskAddress(source.wallet),
       price: source.price,
       fingerprint: source.fingerprint,
     })),
@@ -1294,6 +1711,17 @@ function buildReceiptProof(receipt) {
       rail: attempt.rail,
       network: attempt.network,
       createdAt: attempt.createdAt,
+    })),
+    settlements: receipt.paymentSettlements.map((settlement) => ({
+      id: settlement.id,
+      attemptId: settlement.attemptId,
+      sourceId: settlement.sourceId,
+      payer: settlement.payer,
+      payTo: settlement.payTo,
+      amount: settlement.amount,
+      transactionId: settlement.transactionId,
+      network: settlement.network,
+      createdAt: settlement.createdAt,
     })),
   };
 }
@@ -1328,6 +1756,7 @@ function buildCreatorEarnings(wallet) {
       },
       rank: row.rank,
       quotedAmount: row.price,
+      paidAmount: isPaidStatus(row.paymentStatus) ? row.price : 0,
     };
   });
   const sourceTotals = new Map();
@@ -1340,10 +1769,12 @@ function buildCreatorEarnings(wallet) {
       fingerprint: citation.source.fingerprint,
       citations: 0,
       quotedAmount: 0,
+      paidAmount: 0,
     };
 
     current.citations += 1;
     current.quotedAmount += citation.quotedAmount;
+    current.paidAmount += citation.paidAmount;
     sourceTotals.set(citation.source.id, current);
   }
 
@@ -1355,6 +1786,13 @@ function buildCreatorEarnings(wallet) {
         (total, citation) => total + citation.quotedAmount,
         0,
       ),
+      paidAmount: citations.reduce(
+        (total, citation) => total + citation.paidAmount,
+        0,
+      ),
+      paidCitations: citations.filter((citation) =>
+        isPaidStatus(citation.paymentStatus),
+      ).length,
       sources: sourceTotals.size,
     },
     sources: [...sourceTotals.values()],
@@ -1366,16 +1804,20 @@ function buildSourceDetail(sourceId) {
   const source = statements.getSource.get(sourceId);
   if (!source || source.status !== 'registered') return null;
 
-  const citations = statements.listSourceCitations.all(sourceId).map((row) => ({
-    receiptId: row.receiptId,
-    question: row.question,
-    paymentStatus: row.paymentStatus,
-    rail: row.rail,
-    network: row.network,
-    createdAt: row.createdAt,
-    rank: row.rank,
-    quotedAmount: row.price,
-  }));
+  const citations = statements.listSourceCitations
+    .all(sourceId)
+    .filter((row) => isPublicReceiptStatus(row.paymentStatus))
+    .map((row) => ({
+      receiptId: row.receiptId,
+      question: row.question,
+      paymentStatus: row.paymentStatus,
+      rail: row.rail,
+      network: row.network,
+      createdAt: row.createdAt,
+      rank: row.rank,
+      quotedAmount: row.price,
+      paidAmount: isPaidStatus(row.paymentStatus) ? row.price : 0,
+    }));
 
   return {
     source: normalizeSource(source),
@@ -1385,17 +1827,28 @@ function buildSourceDetail(sourceId) {
         (total, citation) => total + citation.quotedAmount,
         0,
       ),
+      paidAmount: citations.reduce(
+        (total, citation) => total + citation.paidAmount,
+        0,
+      ),
+      paidCitations: citations.filter((citation) =>
+        isPaidStatus(citation.paymentStatus),
+      ).length,
       receipts: new Set(citations.map((citation) => citation.receiptId)).size,
     },
     citations,
   };
 }
 
+function isPaidStatus(status) {
+  return status === 'paid' || status === 'settled';
+}
+
 function verifyReceiptProof(proof) {
   const receiptId = String(proof?.receiptId ?? '').trim();
   if (!receiptId) return { valid: false, reason: 'Receipt ID is missing.' };
 
-  const receipt = buildReceipt(receiptId);
+  const receipt = buildReceipt(receiptId, { allowPrivate: true });
   if (!receipt) return { valid: false, reason: 'Receipt was not found.' };
 
   const expected = buildReceiptProof(receipt);
@@ -1408,6 +1861,8 @@ function verifyReceiptProof(proof) {
     ['network', expected.network === proof.network],
     ['status', expected.status === proof.status],
     ['sources', Array.isArray(proof.sources)],
+    ['payments', Array.isArray(proof.payments)],
+    ['settlements', Array.isArray(proof.settlements)],
   ];
 
   for (const [label, passed] of checks) {
@@ -1428,11 +1883,41 @@ function verifyReceiptProof(proof) {
     if (proofSource.fingerprint !== expectedSource.fingerprint) {
       return { valid: false, reason: 'Source fingerprint does not match.' };
     }
+    if (proofSource.wallet !== expectedSource.wallet) {
+      return { valid: false, reason: 'Source payout wallet does not match.' };
+    }
     if (proofSource.price !== expectedSource.price) {
       return { valid: false, reason: 'Source price does not match.' };
     }
     if (proofSource.rank !== expectedSource.rank) {
       return { valid: false, reason: 'Source rank does not match.' };
+    }
+  }
+
+  if (expected.settlements.length !== proof.settlements.length) {
+    return { valid: false, reason: 'Settlement count does not match.' };
+  }
+
+  for (const expectedSettlement of expected.settlements) {
+    const proofSettlement = proof.settlements.find(
+      (settlement) => settlement.id === expectedSettlement.id,
+    );
+    if (!proofSettlement) {
+      return { valid: false, reason: 'Settlement proof is missing.' };
+    }
+    for (const key of [
+      'attemptId',
+      'sourceId',
+      'payer',
+      'payTo',
+      'amount',
+      'transactionId',
+      'network',
+      'createdAt',
+    ]) {
+      if (proofSettlement[key] !== expectedSettlement[key]) {
+        return { valid: false, reason: `Settlement ${key} does not match.` };
+      }
     }
   }
 
@@ -1444,9 +1929,10 @@ function verifyReceiptProof(proof) {
   };
 }
 
-function routeSources({ question, budget, kinds }) {
+function routeSources({ question, budget, kinds, buyerWallet }) {
   const normalizedQuestion = String(question ?? '').trim();
   const normalizedBudget = Number(budget);
+  const normalizedBuyerWallet = String(buyerWallet ?? '').trim();
   const normalizedKinds = Array.isArray(kinds)
     ? kinds.filter((kind) => sourceKinds.has(kind))
     : [...sourceKinds];
@@ -1457,6 +1943,9 @@ function routeSources({ question, budget, kinds }) {
   }
   if (normalizedKinds.length === 0) {
     return { error: 'At least one source class is required.' };
+  }
+  if (normalizedBuyerWallet && !isEvmAddress(normalizedBuyerWallet)) {
+    return { error: 'Buyer wallet must be a valid EVM address.' };
   }
 
   let totalSpend = 0;
@@ -1494,9 +1983,17 @@ function routeSources({ question, budget, kinds }) {
   }
 
   const runId = randomUUID();
+  const accessToken = randomUUID();
   db.exec('BEGIN');
   try {
-    statements.insertRun.run(runId, normalizedQuestion, normalizedBudget, totalSpend);
+    statements.insertRun.run(
+      runId,
+      normalizedQuestion,
+      normalizedBudget,
+      totalSpend,
+      accessToken,
+      normalizedBuyerWallet,
+    );
     selected.forEach((source, index) => {
       statements.insertSelectedSource.run(
         runId,
@@ -1512,12 +2009,18 @@ function routeSources({ question, budget, kinds }) {
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
+    logError('payment_attempt.persist_failed', error, {
+      receiptId: maskIdentifier(receiptId),
+      status: execution.status,
+    });
     throw error;
   }
 
-  const receipt = buildReceipt(runId);
-  const walletConfig = normalizeWalletConfig(statements.getWalletConfig.get());
-  const quote = createPaymentQuote({ receipt, walletConfig });
+  const receipt = buildReceipt(runId, {
+    accessToken,
+    includeAccessToken: true,
+  });
+  const quote = createPaymentQuote({ receipt });
 
   return {
     value: {
@@ -1533,19 +2036,59 @@ function routeSources({ question, budget, kinds }) {
 function recordPaymentAttempt(receiptId, execution) {
   const attemptId = randomUUID();
 
+  db.exec('BEGIN');
+  try {
   statements.insertPaymentAttempt.run(
     attemptId,
     receiptId,
     execution.status,
-    execution.settlements?.length
-      ? `${execution.reason} ${JSON.stringify({ settlements: execution.settlements })}`
-      : execution.reason,
+    execution.reason,
     execution.readiness.rail,
     execution.readiness.network,
   );
+    for (const settlement of execution.settlements ?? []) {
+      statements.insertPaymentSettlement.run(
+        randomUUID(),
+        attemptId,
+        receiptId,
+        stringifySettlementValue(settlement.sourceId),
+        stringifySettlementValue(settlement.payer),
+        stringifySettlementValue(settlement.payTo),
+        stringifySettlementValue(settlement.amount),
+        stringifySettlementValue(settlement.transactionId),
+        stringifySettlementValue(settlement.network),
+      );
+    }
   statements.updateRunPaymentStatus.run(execution.status, receiptId);
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    logError('route.persist_failed', error, {
+      buyerWallet: maskAddress(normalizedBuyerWallet),
+      selectedSources: selected.length,
+      totalSpend,
+    });
+    throw error;
+  }
 
   return attemptId;
+}
+
+function stringifySettlementValue(value) {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function accessTokenFromUrl(url) {
+  return String(url.searchParams.get('access') ?? '').trim();
+}
+
+function accessTokenFromBody(body) {
+  return String(body?.accessToken ?? '').trim();
 }
 
 async function handleRequest(request, response) {
@@ -1562,14 +2105,13 @@ async function handleRequest(request, response) {
     }
 
     if (request.method === 'GET' && url.pathname === '/') {
-      const wallet = normalizeWalletConfig(statements.getWalletConfig.get());
-      const payment = getPaymentReadiness(wallet);
+      const payment = getPaymentReadiness();
       sendHtml(
         response,
         200,
         renderBackendHome({
           sourceCount: statements.listSources.all().length,
-          wallet,
+          wallet: { ready: false },
           payment,
         }),
       );
@@ -1577,35 +2119,34 @@ async function handleRequest(request, response) {
     }
 
     if (request.method === 'GET' && url.pathname === '/health') {
-      const wallet = normalizeWalletConfig(statements.getWalletConfig.get());
-      const payment = getPaymentReadiness(wallet);
+      const payment = getPaymentReadiness();
       sendJson(response, 200, {
         ok: true,
         service: 'sourcepay-api',
         sources: statements.listSources.all().length,
-        walletReady: wallet.ready,
+        walletReady: false,
         paymentReady: payment.ready,
       });
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/status') {
-      const wallet = normalizeWalletConfig(statements.getWalletConfig.get());
-      const payment = getPaymentReadiness(wallet);
+      const payment = getPaymentReadiness();
       sendJson(response, 200, {
         ok: true,
         database: 'sqlite',
         sources: statements.listSources.all().length,
-        walletReady: wallet.ready,
+        walletReady: false,
         paymentReady: payment.ready,
       });
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/payment-readiness') {
-      const wallet = normalizeWalletConfig(statements.getWalletConfig.get());
       sendJson(response, 200, {
-        payment: getPaymentReadiness(wallet),
+        payment: await getPaymentReadinessDetails({
+          checkGateway: url.searchParams.get('check') === 'gateway',
+        }),
       });
       return;
     }
@@ -1613,7 +2154,7 @@ async function handleRequest(request, response) {
     if (request.method === 'GET' && url.pathname === '/api/config') {
       sendJson(response, 200, {
         config: {
-          network: process.env.SOURCEPAY_NETWORK || 'Arc',
+          network: normalizeNetworkName(process.env.SOURCEPAY_NETWORK),
           arcRpcUrl: Boolean(process.env.ARC_RPC_URL || process.env.RPC),
           faucetUrls: {
             arc:
@@ -1628,39 +2169,44 @@ async function handleRequest(request, response) {
       return;
     }
 
-    if (request.method === 'GET' && url.pathname === '/api/wallet') {
-      sendJson(response, 200, {
-        wallet: normalizeWalletConfig(statements.getWalletConfig.get()),
-      });
-      return;
-    }
-
-    if (request.method === 'POST' && url.pathname === '/api/wallet') {
-      const parsed = validateWalletConfig(await readBody(request));
-      if (parsed.error) {
-        sendJson(response, 400, { error: parsed.error });
+    if (request.method === 'POST' && url.pathname === '/api/auth/challenge') {
+      if (applyRateLimit(request, response, 'authChallenge')) return;
+      const result = createWalletAuthChallenge(await readBody(request));
+      if (result.error) {
+        logEvent('warn', 'auth.challenge.rejected', {
+          ...requestLogFields(request, url),
+          status: result.status,
+          reason: result.error,
+        });
+        sendJson(response, result.status, { error: result.error });
         return;
       }
 
-      statements.updateWalletConfig.run(
-        parsed.value.agentWallet,
-        parsed.value.network,
-      );
-      sendJson(response, 200, {
-        wallet: normalizeWalletConfig(statements.getWalletConfig.get()),
+      logEvent('info', 'auth.challenge.created', {
+        ...requestLogFields(request, url),
+        challengeId: maskIdentifier(result.value.id),
+        wallet: maskAddress(result.value.wallet),
+        purpose: result.value.purpose,
+        expiresAt: result.value.expiresAt,
       });
-      return;
-    }
-
-    if (request.method === 'DELETE' && url.pathname === '/api/wallet') {
-      statements.clearWalletConfig.run();
-      sendJson(response, 200, {
-        wallet: normalizeWalletConfig(statements.getWalletConfig.get()),
-      });
+      sendJson(response, 201, { challenge: result.value });
       return;
     }
 
     if (request.method === 'GET' && url.pathname === '/api/sources') {
+      const wallet = String(url.searchParams.get('wallet') ?? '').trim();
+      if (wallet) {
+        if (!isEvmAddress(wallet)) {
+          sendJson(response, 400, { error: 'Source wallet must be a valid EVM address.' });
+          return;
+        }
+
+        sendJson(response, 200, {
+          sources: statements.listSourcesByWallet.all(wallet).map(normalizeSource),
+        });
+        return;
+      }
+
       sendJson(response, 200, {
         sources: statements.listSources.all().map(normalizeSource),
       });
@@ -1668,6 +2214,7 @@ async function handleRequest(request, response) {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/source-preview') {
+      if (applyRateLimit(request, response, 'sourcePreview')) return;
       const result = await buildSourcePreview(await readBody(request));
       if (result.error) {
         sendJson(response, 400, { error: result.error });
@@ -1684,7 +2231,13 @@ async function handleRequest(request, response) {
         sendJson(response, 200, {
           earnings: {
             wallet: '',
-            totals: { citations: 0, quotedAmount: 0, sources: 0 },
+            totals: {
+              citations: 0,
+              quotedAmount: 0,
+              paidAmount: 0,
+              paidCitations: 0,
+              sources: 0,
+            },
             sources: [],
             receipts: [],
           },
@@ -1696,8 +2249,31 @@ async function handleRequest(request, response) {
         return;
       }
 
+      sendJson(response, 401, {
+        error: 'Sign with the payout wallet before viewing earnings.',
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/creator-earnings') {
+      if (applyRateLimit(request, response, 'privateRead')) return;
+      const parsed = await validateCreatorEarningsAccess(await readBody(request));
+      if (parsed.error) {
+        logEvent('warn', 'creator_earnings.auth_failed', {
+          ...requestLogFields(request, url),
+          status: parsed.status,
+          reason: parsed.error,
+        });
+        sendJson(response, parsed.status, { error: parsed.error });
+        return;
+      }
+
+      logEvent('info', 'creator_earnings.viewed', {
+        ...requestLogFields(request, url),
+        wallet: maskAddress(parsed.value.wallet),
+      });
       sendJson(response, 200, {
-        earnings: buildCreatorEarnings(wallet),
+        earnings: buildCreatorEarnings(parsed.value.wallet),
       });
       return;
     }
@@ -1712,7 +2288,34 @@ async function handleRequest(request, response) {
       return;
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/buyer/receipts') {
+      if (applyRateLimit(request, response, 'privateRead')) return;
+      const parsed = await validateBuyerReceiptsAccess(await readBody(request));
+      if (parsed.error) {
+        logEvent('warn', 'buyer_receipts.auth_failed', {
+          ...requestLogFields(request, url),
+          status: parsed.status,
+          reason: parsed.error,
+        });
+        sendJson(response, parsed.status, { error: parsed.error });
+        return;
+      }
+
+      logEvent('info', 'buyer_receipts.viewed', {
+        ...requestLogFields(request, url),
+        wallet: maskAddress(parsed.value.wallet),
+      });
+      sendJson(response, 200, {
+        receipts: statements.listRunsByBuyer.all(parsed.value.wallet).map((run) => ({
+          ...normalizeRun(run),
+          sources: statements.getRunSources.all(run.id).map(normalizeSource),
+        })),
+      });
+      return;
+    }
+
     if (request.method === 'POST' && url.pathname === '/api/sources') {
+      if (applyRateLimit(request, response, 'sourceWrite')) return;
       const parsed = await validateSource(await readBody(request));
       if (parsed.error) {
         sendJson(response, 400, { error: parsed.error });
@@ -1741,11 +2344,20 @@ async function handleRequest(request, response) {
         ownershipSignature,
         ownershipMessage,
       );
+      const createdSource = normalizeSource(
+        statements.listSources.all().find((source) => source.id === id),
+      );
 
+      logEvent('info', 'source.registered', {
+        ...requestLogFields(request, url),
+        sourceId: maskIdentifier(id),
+        wallet: maskAddress(wallet),
+        kind,
+        price,
+        fingerprint: maskIdentifier(createdSource.fingerprint),
+      });
       sendJson(response, 201, {
-        source: normalizeSource(
-          statements.listSources.all().find((source) => source.id === id),
-        ),
+        source: createdSource,
       });
       return;
     }
@@ -1763,6 +2375,7 @@ async function handleRequest(request, response) {
     }
 
     if (sourceMatch && request.method === 'PATCH') {
+      if (applyRateLimit(request, response, 'sourceWrite')) return;
       const sourceId = sourceMatch[1];
       const existing = statements.getSource.get(sourceId);
       if (!existing) {
@@ -1797,13 +2410,23 @@ async function handleRequest(request, response) {
         ownershipMessage,
         sourceId,
       );
+      const updatedSource = normalizeSource(statements.getSource.get(sourceId));
+      logEvent('info', 'source.updated', {
+        ...requestLogFields(request, url),
+        sourceId: maskIdentifier(sourceId),
+        wallet: maskAddress(wallet),
+        kind,
+        price,
+        fingerprint: maskIdentifier(updatedSource.fingerprint),
+      });
       sendJson(response, 200, {
-        source: normalizeSource(statements.getSource.get(sourceId)),
+        source: updatedSource,
       });
       return;
     }
 
     if (sourceMatch && request.method === 'DELETE') {
+      if (applyRateLimit(request, response, 'sourceWrite')) return;
       const sourceId = sourceMatch[1];
       const existing = statements.getSource.get(sourceId);
 
@@ -1819,24 +2442,48 @@ async function handleRequest(request, response) {
       }
 
       statements.deleteSource.run(sourceId);
+      logEvent('info', 'source.archived', {
+        ...requestLogFields(request, url),
+        sourceId: maskIdentifier(sourceId),
+        wallet: maskAddress(existing.wallet),
+      });
       sendJson(response, 200, { ok: true });
       return;
     }
 
     if (request.method === 'POST' && url.pathname === '/api/route') {
-      const result = routeSources(await readBody(request));
+      if (applyRateLimit(request, response, 'route')) return;
+      const body = await readBody(request);
+      const result = routeSources(body);
       if (result.error) {
+        logEvent('warn', 'route.rejected', {
+          ...requestLogFields(request, url),
+          reason: result.error,
+          buyerWallet: maskAddress(body.buyerWallet),
+        });
         sendJson(response, 400, { error: result.error });
         return;
       }
 
+      logEvent('info', 'route.created', {
+        ...requestLogFields(request, url),
+        receiptId: maskIdentifier(result.value.id),
+        buyerWallet: maskAddress(result.value.buyerWallet),
+        sourceCount: result.value.sources.length,
+        totalSpend: result.value.totalSpend,
+        paymentStatus: result.value.paymentStatus,
+      });
       sendJson(response, 201, { receipt: result.value });
       return;
     }
 
     const receiptMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)$/);
     if (request.method === 'GET' && receiptMatch) {
-      const receipt = buildReceipt(receiptMatch[1]);
+      const accessToken = accessTokenFromUrl(url);
+      const receipt = buildReceipt(receiptMatch[1], {
+        accessToken,
+        includeAccessToken: Boolean(accessToken),
+      });
       if (!receipt) {
         sendJson(response, 404, { error: 'Receipt not found.' });
         return;
@@ -1848,7 +2495,9 @@ async function handleRequest(request, response) {
 
     const receiptProofMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/proof$/);
     if (request.method === 'GET' && receiptProofMatch) {
-      const receipt = buildReceipt(receiptProofMatch[1]);
+      const receipt = buildReceipt(receiptProofMatch[1], {
+        accessToken: accessTokenFromUrl(url),
+      });
       if (!receipt) {
         sendJson(response, 404, { error: 'Receipt not found.' });
         return;
@@ -1862,33 +2511,70 @@ async function handleRequest(request, response) {
       /^\/api\/receipts\/([^/]+)\/payment-requirements$/,
     );
     if (request.method === 'GET' && paymentRequirementsMatch) {
-      const receipt = buildReceipt(paymentRequirementsMatch[1]);
+      if (
+        applyRateLimit(request, response, 'paymentRequirements', {
+          key: paymentRequirementsMatch[1],
+        })
+      ) {
+        return;
+      }
+      const receipt = buildReceipt(paymentRequirementsMatch[1], {
+        accessToken: accessTokenFromUrl(url),
+      });
       if (!receipt) {
         sendJson(response, 404, { error: 'Receipt not found.' });
         return;
       }
-      const wallet = normalizeWalletConfig(statements.getWalletConfig.get());
+      const payer = String(url.searchParams.get('payer') ?? '').trim();
+      if (payer && !isEvmAddress(payer)) {
+        logEvent('warn', 'payment_requirements.rejected', {
+          ...requestLogFields(request, url),
+          receiptId: maskIdentifier(receipt.id),
+          reason: 'Payer wallet must be a valid EVM address.',
+        });
+        sendJson(response, 400, { error: 'Payer wallet must be a valid EVM address.' });
+        return;
+      }
 
+      logEvent('info', 'payment_requirements.generated', {
+        ...requestLogFields(request, url),
+        receiptId: maskIdentifier(receipt.id),
+        payer: maskAddress(payer),
+        sourceCount: receipt.sources.length,
+      });
       sendJson(response, 200, {
         receiptId: receipt.id,
         totalSpend: receipt.totalSpend,
-        payer: wallet.agentWallet,
-        requirements: createReceiptSigningRequests(receipt, wallet),
+        payer: payer || null,
+        requirements: createReceiptSigningRequests(receipt, payer || null),
       });
       return;
     }
 
     if (request.method === 'POST' && url.pathname === '/api/proofs/verify') {
+      if (applyRateLimit(request, response, 'proofVerify')) return;
       const body = await readBody(request);
+      const verification = verifyReceiptProof(body.proof);
+      logEvent(verification.valid ? 'info' : 'warn', 'proof.verified', {
+        ...requestLogFields(request, url),
+        valid: verification.valid,
+        receiptId: maskIdentifier(verification.receiptId),
+        reason: verification.reason,
+      });
       sendJson(response, 200, {
-        verification: verifyReceiptProof(body.proof),
+        verification,
       });
       return;
     }
 
     const payMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/pay$/);
     if (request.method === 'POST' && payMatch) {
-      const receipt = buildReceipt(payMatch[1]);
+      if (applyRateLimit(request, response, 'paymentSubmit', { key: payMatch[1] })) return;
+      const body = await readBody(request);
+      const receipt = buildReceipt(payMatch[1], {
+        accessToken: accessTokenFromBody(body),
+        includeAccessToken: true,
+      });
       if (!receipt) {
         sendJson(response, 404, { error: 'Receipt not found.' });
         return;
@@ -1897,17 +2583,39 @@ async function handleRequest(request, response) {
         sendJson(response, 400, { error: 'Receipt has no selected sources.' });
         return;
       }
+      if (isPaidStatus(receipt.paymentStatus)) {
+        sendJson(response, 409, {
+          payment: {
+            id: null,
+            ok: false,
+            status: receipt.paymentStatus,
+            reason: 'Receipt has already been paid.',
+          },
+          receipt,
+        });
+        return;
+      }
 
-      const walletConfig = normalizeWalletConfig(statements.getWalletConfig.get());
-      const body = await readBody(request);
       const execution = await createPaymentExecution({
         receipt,
-        walletConfig,
         payments: body.payments,
       });
       const attemptId = recordPaymentAttempt(receipt.id, execution);
+      logEvent(execution.ok ? 'info' : 'warn', 'payment.attempt_recorded', {
+        ...requestLogFields(request, url),
+        receiptId: maskIdentifier(receipt.id),
+        attemptId: maskIdentifier(attemptId),
+        status: execution.status,
+        ok: execution.ok,
+        reason: execution.reason,
+        settlementCount: execution.settlements?.length ?? 0,
+      });
 
-      const updatedReceipt = buildReceipt(receipt.id);
+      const updatedReceipt = buildReceipt(receipt.id, {
+        accessToken: body.accessToken,
+        allowPrivate: true,
+        includeAccessToken: true,
+      });
       const status = execution.ok ? 200 : 409;
       sendJson(response, status, {
         payment: {
@@ -1921,18 +2629,25 @@ async function handleRequest(request, response) {
 
     sendJson(response, 404, { error: 'This page is not available.' });
   } catch (error) {
-    console.error(error);
     if (error instanceof ClientRequestError) {
+      logEvent('warn', 'request.client_error', {
+        ...requestLogFields(request, url),
+        status: error.status,
+        reason: error.message,
+      });
       sendJson(response, error.status, { error: error.message });
       return;
     }
 
+    logError('request.unhandled_error', error, requestLogFields(request, url));
     sendJson(response, 500, { error: 'Something went wrong. Please try again.' });
   }
 }
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? '127.0.0.1';
-createServer(handleRequest).listen(port, host, () => {
-  process.stdout.write(`SourcePay service listening on http://${host}:${port}\n`);
-});
+if (process.env.SOURCEPAY_NO_LISTEN !== '1') {
+  createServer(handleRequest).listen(port, host, () => {
+    process.stdout.write(`SourcePay service listening on http://${host}:${port}\n`);
+  });
+}

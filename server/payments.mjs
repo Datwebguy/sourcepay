@@ -16,16 +16,16 @@ export function isEvmAddress(value) {
   return isAddress(String(value));
 }
 
-export function getPaymentReadiness(walletConfig) {
+export function getPaymentReadiness() {
   const network = getNetwork();
-  const hasAgentWallet = Boolean(walletConfig?.agentWallet);
   const hasRpcUrl = Boolean(process.env.ARC_RPC_URL || process.env.RPC);
+  const gatewayUrl = gatewayUrlForNetwork();
 
   return {
-    ready: hasAgentWallet && hasRpcUrl,
+    ready: hasRpcUrl,
     network,
     rail: 'x402',
-    status: hasAgentWallet ? 'configured' : 'needs_wallet',
+    status: hasRpcUrl ? 'configured' : 'needs_rpc',
     batching: {
       name: CIRCLE_BATCHING_NAME,
       scheme: CIRCLE_BATCHING_SCHEME,
@@ -39,11 +39,74 @@ export function getPaymentReadiness(walletConfig) {
       }),
     },
     x402Version,
+    gateway: {
+      url: gatewayUrl,
+      checked: false,
+      reachable: null,
+      arcTestnetSupported: null,
+      error: '',
+    },
     requirements: {
-      agentWallet: hasAgentWallet,
       rpcUrl: hasRpcUrl,
+      gateway: false,
     },
   };
+}
+
+export async function getPaymentReadinessDetails({ checkGateway = false } = {}) {
+  const readiness = getPaymentReadiness();
+  if (!checkGateway) return readiness;
+
+  try {
+    const support = await withTimeout(
+      createGatewayFacilitator().getSupported(),
+      4_000,
+      'Circle Gateway support check timed out.',
+    );
+    const arcTestnetNetwork = `eip155:${CHAIN_CONFIGS.arcTestnet.chain.id}`;
+    const arcTestnetSupported = Array.isArray(support.kinds)
+      ? support.kinds.some(
+          (kind) =>
+            kind?.scheme === CIRCLE_BATCHING_SCHEME &&
+            kind?.network === arcTestnetNetwork &&
+            supportsBatching(kind),
+        )
+      : false;
+
+    return {
+      ...readiness,
+      ready: readiness.ready && arcTestnetSupported,
+      gateway: {
+        ...readiness.gateway,
+        checked: true,
+        reachable: true,
+        arcTestnetSupported,
+        error: arcTestnetSupported
+          ? ''
+          : 'Circle Gateway does not currently advertise Arc Testnet batching support.',
+      },
+      requirements: {
+        ...readiness.requirements,
+        gateway: arcTestnetSupported,
+      },
+    };
+  } catch (error) {
+    return {
+      ...readiness,
+      ready: false,
+      gateway: {
+        ...readiness.gateway,
+        checked: true,
+        reachable: false,
+        arcTestnetSupported: false,
+        error: error instanceof Error ? error.message : 'Circle Gateway support check failed.',
+      },
+      requirements: {
+        ...readiness.requirements,
+        gateway: false,
+      },
+    };
+  }
 }
 
 export function getArcWalletNetwork() {
@@ -63,22 +126,19 @@ export function getArcWalletNetwork() {
   };
 }
 
-export function createPaymentQuote({ receipt, walletConfig }) {
-  const readiness = getPaymentReadiness(walletConfig);
+export function createPaymentQuote({ receipt }) {
+  const readiness = getPaymentReadiness();
 
   return {
     paymentStatus: 'quoted',
     rail: readiness.rail,
     network: readiness.network,
     readyForSettlement: readiness.ready,
-    agentWallet: walletConfig?.agentWallet ?? null,
     totalSpend: receipt.totalSpend,
   };
 }
 
-export function createReceiptSigningRequests(receipt, walletConfig) {
-  const payer = walletConfig?.agentWallet;
-
+export function createReceiptSigningRequests(receipt, payer) {
   return receipt.sources.map((source) => {
     const requirements = createSourcePaymentRequirements(source);
 
@@ -94,14 +154,14 @@ export function createReceiptSigningRequests(receipt, walletConfig) {
   });
 }
 
-export async function createPaymentExecution({ receipt, walletConfig, payments }) {
-  const readiness = getPaymentReadiness(walletConfig);
+export async function createPaymentExecution({ receipt, payments }) {
+  const readiness = getPaymentReadiness();
 
   if (!readiness.ready) {
     return {
       ok: false,
       status: 'settlement_setup',
-      reason: 'Payment setup is not complete yet. Add the paying wallet and connect Arc before paying creators.',
+      reason: 'Payment setup is not complete yet. Configure the Arc Testnet RPC before paying creators.',
       readiness,
     };
   }
@@ -111,6 +171,16 @@ export async function createPaymentExecution({ receipt, walletConfig, payments }
       ok: false,
       status: 'settlement_setup',
       reason: 'No creator payout was submitted.',
+      readiness,
+    };
+  }
+
+  const paymentListError = validateSubmittedPaymentList(receipt, payments);
+  if (paymentListError) {
+    return {
+      ok: false,
+      status: 'payment_required',
+      reason: paymentListError,
       readiness,
     };
   }
@@ -136,7 +206,30 @@ export async function createPaymentExecution({ receipt, walletConfig, payments }
     }
 
     const requirements = createSourcePaymentRequirements(source);
-    const verification = await facilitator.verify(paymentPayload, requirements);
+    const payloadError = validatePaymentPayload(paymentPayload, requirements);
+    if (payloadError) {
+      return {
+        ok: false,
+        status: 'payment_rejected',
+        reason: payloadError,
+        readiness,
+        settlements,
+      };
+    }
+
+    let verification;
+    try {
+      verification = await facilitator.verify(paymentPayload, requirements);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'payment_rejected',
+        reason: gatewayErrorMessage('Circle Gateway verification failed', error),
+        readiness,
+        settlements,
+      };
+    }
+
     if (!verification.isValid) {
       return {
         ok: false,
@@ -147,7 +240,19 @@ export async function createPaymentExecution({ receipt, walletConfig, payments }
       };
     }
 
-    const settlement = await facilitator.settle(paymentPayload, requirements);
+    let settlement;
+    try {
+      settlement = await facilitator.settle(paymentPayload, requirements);
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'payment_rejected',
+        reason: gatewayErrorMessage('Circle Gateway settlement failed', error),
+        readiness,
+        settlements,
+      };
+    }
+
     if (!settlement.success) {
       return {
         ok: false,
@@ -160,8 +265,9 @@ export async function createPaymentExecution({ receipt, walletConfig, payments }
 
     settlements.push({
       sourceId: source.id,
+      payTo: requirements.payTo,
       payer: settlement.payer ?? verification.payer ?? '',
-      transaction: settlement.transaction,
+      transactionId: settlement.transaction,
       network: settlement.network,
       amount: requirements.amount,
     });
@@ -177,14 +283,17 @@ export async function createPaymentExecution({ receipt, walletConfig, payments }
 }
 
 function getNetwork() {
-  return process.env.SOURCEPAY_NETWORK || 'Arc';
+  return process.env.SOURCEPAY_NETWORK || 'Arc Testnet';
 }
 
 function createGatewayFacilitator() {
-  const url = process.env.CIRCLE_GATEWAY_URL || defaultGatewayUrl();
   return new BatchFacilitatorClient({
-    url,
+    url: gatewayUrlForNetwork(),
   });
+}
+
+function gatewayUrlForNetwork() {
+  return process.env.CIRCLE_GATEWAY_URL || defaultGatewayUrl();
 }
 
 function createSourcePaymentRequirements(source) {
@@ -208,7 +317,7 @@ function createSourcePaymentRequirements(source) {
 function createSigningTypedData({ payer, requirements, source }) {
   const chainId = Number(requirements.network.split(':')[1]);
   const now = Math.floor(Date.now() / 1000);
-  const validAfter = '0';
+  const validAfter = String(now - 600);
   const validBefore = String(
     now + Math.max(requirements.maxTimeoutSeconds, GATEWAY_AUTH_VALIDITY_WINDOW_SECONDS),
   );
@@ -255,6 +364,7 @@ function createSigningTypedData({ payer, requirements, source }) {
 }
 
 function normalizeSubmittedPaymentPayload(payment, source) {
+  if (!payment || typeof payment !== 'object') return null;
   if (payment.paymentPayload) return payment.paymentPayload;
   if (payment.authorization && payment.signature) {
     const requirements = createSourcePaymentRequirements(source);
@@ -273,6 +383,97 @@ function normalizeSubmittedPaymentPayload(payment, source) {
   }
 
   return null;
+}
+
+function validateSubmittedPaymentList(receipt, payments) {
+  const expectedSourceIds = new Set(receipt.sources.map((source) => source.id));
+  const seenSourceIds = new Set();
+
+  for (const payment of payments) {
+    if (!payment || typeof payment !== 'object') {
+      return 'Payment approval must be submitted for each selected source.';
+    }
+
+    const sourceId = String(payment.sourceId ?? '').trim();
+    if (!sourceId) {
+      return 'Payment approval is missing a source ID.';
+    }
+    if (!expectedSourceIds.has(sourceId)) {
+      return 'Payment approval includes a source that is not on this receipt.';
+    }
+    if (seenSourceIds.has(sourceId)) {
+      return 'Payment approval includes the same source more than once.';
+    }
+    seenSourceIds.add(sourceId);
+  }
+
+  if (seenSourceIds.size !== expectedSourceIds.size) {
+    return 'A selected source still needs payment approval.';
+  }
+
+  return '';
+}
+
+function validatePaymentPayload(paymentPayload, requirements) {
+  if (!paymentPayload || typeof paymentPayload !== 'object') {
+    return 'Payment approval payload is missing.';
+  }
+  const payload = paymentPayload.payload;
+  if (!payload || typeof payload !== 'object') {
+    return 'Payment approval payload is malformed.';
+  }
+  if (paymentPayload.x402Version !== x402Version) {
+    return 'Payment approval uses an unsupported x402 version.';
+  }
+  if (paymentPayload.scheme !== undefined && paymentPayload.scheme !== requirements.scheme) {
+    return 'Payment approval uses the wrong payment scheme.';
+  }
+  if (paymentPayload.network !== undefined && paymentPayload.network !== requirements.network) {
+    return 'Payment approval uses the wrong network.';
+  }
+
+  const authorization = payload.authorization;
+  if (!authorization || typeof authorization !== 'object') {
+    return 'Payment authorization is missing.';
+  }
+
+  const signature = String(payload.signature ?? '').trim();
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    return 'Payment signature is missing or malformed.';
+  }
+  if (!isEvmAddress(authorization.from)) {
+    return 'Payment authorization payer is not a valid wallet.';
+  }
+  if (!sameAddress(authorization.to, requirements.payTo)) {
+    return 'Payment authorization recipient does not match the creator wallet.';
+  }
+  if (String(authorization.value ?? '') !== requirements.amount) {
+    return 'Payment authorization amount does not match the receipt.';
+  }
+  if (!/^\d+$/.test(String(authorization.validAfter ?? ''))) {
+    return 'Payment authorization start time is invalid.';
+  }
+  if (!/^\d+$/.test(String(authorization.validBefore ?? ''))) {
+    return 'Payment authorization expiration is invalid.';
+  }
+  if (BigInt(String(authorization.validBefore)) <= BigInt(Math.floor(Date.now() / 1000))) {
+    return 'Payment authorization has expired. Refresh the receipt and try again.';
+  }
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(authorization.nonce ?? ''))) {
+    return 'Payment authorization nonce is malformed.';
+  }
+
+  return '';
+}
+
+function sameAddress(left, right) {
+  return isEvmAddress(left) && isEvmAddress(right) && String(left).toLowerCase() === String(right).toLowerCase();
+}
+
+function gatewayErrorMessage(prefix, error) {
+  const message = error instanceof Error ? error.message : '';
+  if (!message) return prefix;
+  return `${prefix}: ${message.slice(0, 220)}`;
 }
 
 function createPaymentResource(source) {
@@ -295,4 +496,15 @@ function defaultGatewayUrl() {
   return getNetwork().toLowerCase().includes('test')
     ? 'https://gateway-api-testnet.circle.com'
     : 'https://gateway-api-testnet.circle.com';
+}
+
+function withTimeout(promise, timeoutMs, timeoutMessage) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    clearTimeout(timeoutId);
+  });
 }

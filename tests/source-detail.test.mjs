@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { test } from 'node:test';
 import { createServer } from 'node:net';
+import { DatabaseSync } from 'node:sqlite';
 import { privateKeyToAccount } from 'viem/accounts';
 
 let baseUrl = '';
@@ -15,6 +16,12 @@ test('source detail reflects real routed citation history', async () => {
   const dbPath = join(process.cwd(), 'data', 'source-detail-test.sqlite');
   const creatorAccount = privateKeyToAccount(
     '0x1000000000000000000000000000000000000000000000000000000000000001',
+  );
+  const otherCreatorAccount = privateKeyToAccount(
+    '0x2000000000000000000000000000000000000000000000000000000000000002',
+  );
+  const buyerAccount = privateKeyToAccount(
+    '0x3000000000000000000000000000000000000000000000000000000000000003',
   );
   await rm(dbPath, { force: true });
   await rm(`${dbPath}-shm`, { force: true });
@@ -28,6 +35,13 @@ test('source detail reflects real routed citation history', async () => {
       SOURCEPAY_DB_PATH: dbPath,
       ARC_RPC_URL: 'https://rpc.testnet.arc.network',
       SOURCEPAY_DISABLE_LOCAL_SIGNING: '1',
+      SOURCEPAY_AUTH_LIMIT: '50',
+      SOURCEPAY_PREVIEW_LIMIT: '50',
+      SOURCEPAY_ROUTE_LIMIT: '50',
+      SOURCEPAY_SOURCE_WRITE_LIMIT: '50',
+      SOURCEPAY_PRIVATE_READ_LIMIT: '50',
+      SOURCEPAY_PAYMENT_REQUIREMENTS_LIMIT: '50',
+      SOURCEPAY_PAYMENT_SUBMIT_LIMIT: '50',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -106,6 +120,46 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(sourcePayload.source.fingerprint.length, 64);
     assert.equal(sourcePayload.source.ownershipVerified, true);
 
+    const otherSource = {
+      title: 'Independent cataloging memo',
+      kind: 'Article',
+      wallet: otherCreatorAccount.address,
+      price: 1,
+      content:
+        'Independent cataloging memo about library shelf organization and metadata labels.',
+    };
+    const otherOwnershipSignature = await signSourceOwnership(otherCreatorAccount, otherSource);
+    const otherSourcePayload = await postJson('/api/sources', {
+      ...otherSource,
+      ownerWallet: otherCreatorAccount.address,
+      ownershipSignature: otherOwnershipSignature,
+    });
+
+    const globalSourcesPayload = await getJson('/api/sources');
+    assert.equal(globalSourcesPayload.sources.length, 2);
+
+    const creatorSourcesPayload = await getJson(
+      `/api/sources?wallet=${creatorAccount.address}`,
+    );
+    assert.equal(creatorSourcesPayload.sources.length, 1);
+    assert.equal(creatorSourcesPayload.sources[0].id, sourcePayload.source.id);
+
+    const otherCreatorSourcesPayload = await getJson(
+      `/api/sources?wallet=${otherCreatorAccount.address}`,
+    );
+    assert.equal(otherCreatorSourcesPayload.sources.length, 1);
+    assert.equal(otherCreatorSourcesPayload.sources[0].id, otherSourcePayload.source.id);
+
+    const invalidWalletSourcesResponse = await fetch(
+      `${baseUrl}/api/sources?wallet=not-a-wallet`,
+    );
+    const invalidWalletSourcesPayload = await invalidWalletSourcesResponse.json();
+    assert.equal(invalidWalletSourcesResponse.status, 400);
+    assert.equal(
+      invalidWalletSourcesPayload.error,
+      'Source wallet must be a valid EVM address.',
+    );
+
     const unsignedArchiveResponse = await fetch(
       `${baseUrl}/api/sources/${sourcePayload.source.id}`,
       {
@@ -136,31 +190,270 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(unrelatedRouteResponse.status, 400);
     assert.match(unrelatedRoutePayload.error, /No eligible creator source matched/u);
 
+    const invalidBuyerRouteResponse = await fetch(`${baseUrl}/api/route`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: 'How do Arc agents pay creators for citation licensing?',
+        budget: 5000,
+        kinds: ['Article'],
+        buyerWallet: 'not-a-wallet',
+      }),
+    });
+    const invalidBuyerRoutePayload = await invalidBuyerRouteResponse.json();
+    assert.equal(invalidBuyerRouteResponse.status, 400);
+    assert.equal(invalidBuyerRoutePayload.error, 'Buyer wallet must be a valid EVM address.');
+
     const routePayload = await postJson('/api/route', {
       question: 'How do Arc agents pay creators for citation licensing?',
       budget: 5000,
       kinds: ['Article'],
+      buyerWallet: buyerAccount.address,
     });
 
     assert.equal(routePayload.receipt.sources.length, 1);
     assert.equal(routePayload.receipt.sources[0].id, sourcePayload.source.id);
+    assert.equal(routePayload.receipt.sources[0].ownershipVerified, true);
+    assert.equal(routePayload.receipt.buyerWallet, buyerAccount.address);
+    assert.ok(routePayload.receipt.accessToken);
+
+    const publicReceiptsPayload = await getJson('/api/receipts');
+    assert.deepEqual(publicReceiptsPayload.receipts, []);
+
+    const buyerReceiptsChallenge = await postJson('/api/auth/challenge', {
+      wallet: buyerAccount.address,
+      purpose: 'buyer-receipts',
+    });
+    const buyerReceiptsSignature = await buyerAccount.signMessage({
+      message: buyerReceiptsChallenge.challenge.message,
+    });
+    const buyerReceiptsPayload = await postJson('/api/buyer/receipts', {
+      wallet: buyerAccount.address,
+      ownerWallet: buyerAccount.address,
+      challengeId: buyerReceiptsChallenge.challenge.id,
+      authSignature: buyerReceiptsSignature,
+    });
+    assert.equal(buyerReceiptsPayload.receipts.length, 1);
+    assert.equal(buyerReceiptsPayload.receipts[0].id, routePayload.receipt.id);
+    assert.equal(buyerReceiptsPayload.receipts[0].buyerWallet, buyerAccount.address);
+    assert.equal(
+      buyerReceiptsPayload.receipts[0].accessToken,
+      routePayload.receipt.accessToken,
+    );
+
+    const buyerReceiptsReplayResponse = await fetch(`${baseUrl}/api/buyer/receipts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wallet: buyerAccount.address,
+        ownerWallet: buyerAccount.address,
+        challengeId: buyerReceiptsChallenge.challenge.id,
+        authSignature: buyerReceiptsSignature,
+      }),
+    });
+    const buyerReceiptsReplayPayload = await buyerReceiptsReplayResponse.json();
+    assert.equal(buyerReceiptsReplayResponse.status, 401);
+    assert.equal(
+      buyerReceiptsReplayPayload.error,
+      'Wallet challenge has already been used. Request a new one.',
+    );
+
+    const wrongBuyerReceiptsChallenge = await postJson('/api/auth/challenge', {
+      wallet: buyerAccount.address,
+      purpose: 'buyer-receipts',
+    });
+    const wrongBuyerReceiptsSignature = await otherCreatorAccount.signMessage({
+      message: wrongBuyerReceiptsChallenge.challenge.message,
+    });
+    const wrongBuyerReceiptsResponse = await fetch(`${baseUrl}/api/buyer/receipts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wallet: buyerAccount.address,
+        ownerWallet: otherCreatorAccount.address,
+        challengeId: wrongBuyerReceiptsChallenge.challenge.id,
+        authSignature: wrongBuyerReceiptsSignature,
+      }),
+    });
+    const wrongBuyerReceiptsPayload = await wrongBuyerReceiptsResponse.json();
+    assert.equal(wrongBuyerReceiptsResponse.status, 403);
+    assert.equal(
+      wrongBuyerReceiptsPayload.error,
+      'The signing wallet must match the buyer wallet.',
+    );
+
+    const publicReceiptResponse = await fetch(
+      `${baseUrl}/api/receipts/${routePayload.receipt.id}`,
+    );
+    assert.equal(publicReceiptResponse.status, 404);
+
+    const receiptAccess = `access=${encodeURIComponent(routePayload.receipt.accessToken)}`;
+    const proofPayload = await getJson(
+      `/api/receipts/${routePayload.receipt.id}/proof?${receiptAccess}`,
+    );
+    assert.equal(proofPayload.proof.sources[0].wallet, creatorAccount.address);
+    assert.equal(proofPayload.proof.sources[0].displayWallet, `${creatorAccount.address.slice(0, 6)}...${creatorAccount.address.slice(-4)}`);
+    assert.deepEqual(proofPayload.proof.settlements, []);
 
     const shortReceiptPayload = await getJson(
-      `/api/receipts/${routePayload.receipt.id.slice(0, 8)}`,
+      `/api/receipts/${routePayload.receipt.id.slice(0, 8)}?${receiptAccess}`,
     );
     assert.equal(shortReceiptPayload.receipt.id, routePayload.receipt.id);
+    assert.equal(shortReceiptPayload.receipt.accessToken, routePayload.receipt.accessToken);
     assert.equal(shortReceiptPayload.receipt.sources.length, 1);
     assert.equal(shortReceiptPayload.receipt.sources[0].id, sourcePayload.source.id);
+    assert.equal(shortReceiptPayload.receipt.sources[0].ownershipVerified, true);
 
     const detailAfter = await getJson(`/api/sources/${sourcePayload.source.id}`);
-    assert.equal(detailAfter.totals.citations, 1);
-    assert.equal(detailAfter.totals.receipts, 1);
-    assert.equal(detailAfter.totals.quotedAmount, 1);
-    assert.equal(detailAfter.citations.length, 1);
-    assert.equal(detailAfter.citations[0].receiptId, routePayload.receipt.id);
+    assert.equal(detailAfter.totals.citations, 0);
+    assert.equal(detailAfter.totals.receipts, 0);
+    assert.equal(detailAfter.totals.quotedAmount, 0);
+    assert.equal(detailAfter.totals.paidAmount, 0);
+    assert.equal(detailAfter.totals.paidCitations, 0);
+    assert.deepEqual(detailAfter.citations, []);
+
+    const publicEarningsResponse = await fetch(
+      `${baseUrl}/api/creator-earnings?wallet=${creatorAccount.address}`,
+    );
+    const publicEarningsPayload = await publicEarningsResponse.json();
+    assert.equal(publicEarningsResponse.status, 401);
+    assert.equal(
+      publicEarningsPayload.error,
+      'Sign with the payout wallet before viewing earnings.',
+    );
+
+    const unsupportedChallengeResponse = await fetch(`${baseUrl}/api/auth/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wallet: creatorAccount.address,
+        purpose: 'admin-panel',
+      }),
+    });
+    const unsupportedChallengePayload = await unsupportedChallengeResponse.json();
+    assert.equal(unsupportedChallengeResponse.status, 400);
+    assert.equal(
+      unsupportedChallengePayload.error,
+      'Unsupported wallet authorization purpose.',
+    );
+
+    const wrongEarningsChallenge = await postJson('/api/auth/challenge', {
+      wallet: creatorAccount.address,
+      purpose: 'creator-earnings',
+    });
+    const wrongEarningsSignature = await otherCreatorAccount.signMessage({
+      message: wrongEarningsChallenge.challenge.message,
+    });
+    const wrongEarningsResponse = await fetch(`${baseUrl}/api/creator-earnings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wallet: creatorAccount.address,
+        ownerWallet: otherCreatorAccount.address,
+        challengeId: wrongEarningsChallenge.challenge.id,
+        authSignature: wrongEarningsSignature,
+      }),
+    });
+    const wrongEarningsPayload = await wrongEarningsResponse.json();
+    assert.equal(wrongEarningsResponse.status, 403);
+    assert.equal(
+      wrongEarningsPayload.error,
+      'The signing wallet must match the payout wallet.',
+    );
+
+    const earningsChallenge = await postJson('/api/auth/challenge', {
+      wallet: creatorAccount.address,
+      purpose: 'creator-earnings',
+    });
+    assert.equal(earningsChallenge.challenge.wallet, creatorAccount.address);
+    assert.equal(earningsChallenge.challenge.purpose, 'creator-earnings');
+    assert.match(earningsChallenge.challenge.message, /Nonce:/u);
+
+    const earningsSignature = await creatorAccount.signMessage({
+      message: earningsChallenge.challenge.message,
+    });
+    const earningsPayload = await postJson('/api/creator-earnings', {
+      wallet: creatorAccount.address,
+      ownerWallet: creatorAccount.address,
+      challengeId: earningsChallenge.challenge.id,
+      authSignature: earningsSignature,
+    });
+    assert.equal(earningsPayload.earnings.totals.citations, 1);
+    assert.equal(earningsPayload.earnings.totals.quotedAmount, 1);
+    assert.equal(earningsPayload.earnings.totals.paidAmount, 0);
+    assert.equal(earningsPayload.earnings.totals.paidCitations, 0);
+    assert.equal(earningsPayload.earnings.sources[0].quotedAmount, 1);
+    assert.equal(earningsPayload.earnings.sources[0].paidAmount, 0);
+    assert.equal(earningsPayload.earnings.receipts[0].quotedAmount, 1);
+    assert.equal(earningsPayload.earnings.receipts[0].paidAmount, 0);
+
+    const replayEarningsResponse = await fetch(`${baseUrl}/api/creator-earnings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wallet: creatorAccount.address,
+        ownerWallet: creatorAccount.address,
+        challengeId: earningsChallenge.challenge.id,
+        authSignature: earningsSignature,
+      }),
+    });
+    const replayEarningsPayload = await replayEarningsResponse.json();
+    assert.equal(replayEarningsResponse.status, 401);
+    assert.equal(
+      replayEarningsPayload.error,
+      'Wallet challenge has already been used. Request a new one.',
+    );
+
+    const missingChallengeResponse = await fetch(`${baseUrl}/api/creator-earnings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wallet: creatorAccount.address,
+        ownerWallet: creatorAccount.address,
+        authSignature: earningsSignature,
+      }),
+    });
+    const missingChallengePayload = await missingChallengeResponse.json();
+    assert.equal(missingChallengeResponse.status, 401);
+    assert.equal(
+      missingChallengePayload.error,
+      'Request a fresh wallet challenge before viewing earnings.',
+    );
+
+    const expiredChallenge = await postJson('/api/auth/challenge', {
+      wallet: creatorAccount.address,
+      purpose: 'creator-earnings',
+    });
+    const expiredSignature = await creatorAccount.signMessage({
+      message: expiredChallenge.challenge.message,
+    });
+    const authDb = new DatabaseSync(dbPath);
+    try {
+      authDb
+        .prepare("UPDATE auth_challenges SET expires_at = unixepoch() - 1 WHERE id = ?")
+        .run(expiredChallenge.challenge.id);
+    } finally {
+      authDb.close();
+    }
+    const expiredEarningsResponse = await fetch(`${baseUrl}/api/creator-earnings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wallet: creatorAccount.address,
+        ownerWallet: creatorAccount.address,
+        challengeId: expiredChallenge.challenge.id,
+        authSignature: expiredSignature,
+      }),
+    });
+    const expiredEarningsPayload = await expiredEarningsResponse.json();
+    assert.equal(expiredEarningsResponse.status, 401);
+    assert.equal(
+      expiredEarningsPayload.error,
+      'Wallet challenge expired. Request a new one.',
+    );
 
     const requirementsPayload = await getJson(
-      `/api/receipts/${routePayload.receipt.id}/payment-requirements`,
+      `/api/receipts/${routePayload.receipt.id}/payment-requirements?${receiptAccess}`,
     );
     assert.equal(requirementsPayload.requirements.length, 1);
     assert.equal(requirementsPayload.requirements[0].sourceId, sourcePayload.source.id);
@@ -172,17 +465,13 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(requirementsPayload.payer, null);
     assert.equal(requirementsPayload.requirements[0].typedData, null);
 
-    await postJson('/api/wallet', {
-      agentWallet: '0x2222222222222222222222222222222222222222',
-      network: 'Arc',
-    });
-
+    const payerWallet = '0x2222222222222222222222222222222222222222';
     const signingPayload = await getJson(
-      `/api/receipts/${routePayload.receipt.id}/payment-requirements`,
+      `/api/receipts/${routePayload.receipt.id}/payment-requirements?${receiptAccess}&payer=${payerWallet}`,
     );
     assert.equal(
       signingPayload.requirements[0].typedData.message.from,
-      '0x2222222222222222222222222222222222222222',
+      payerWallet,
     );
     assert.equal(
       signingPayload.requirements[0].typedData.message.to,
@@ -213,7 +502,10 @@ test('source detail reflects real routed citation history', async () => {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ payments: [] }),
+        body: JSON.stringify({
+          accessToken: routePayload.receipt.accessToken,
+          payments: [],
+        }),
       },
     );
     const paymentPayload = await paymentResponse.json();
@@ -221,20 +513,112 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(paymentPayload.payment.ok, false);
     assert.equal(paymentPayload.payment.reason, 'No creator payout was submitted.');
     assert.equal(paymentPayload.receipt.paymentStatus, 'settlement_setup');
+    assert.equal(paymentPayload.receipt.paymentAttempts.length, 1);
+    assert.equal(paymentPayload.receipt.paymentAttempts[0].reason, 'No creator payout was submitted.');
+    assert.deepEqual(paymentPayload.receipt.paymentSettlements, []);
 
-    const disconnectResponse = await fetch(`${baseUrl}/api/wallet`, {
-      method: 'DELETE',
-    });
-    const disconnectPayload = await disconnectResponse.json();
-    assert.equal(disconnectResponse.ok, true);
-    assert.equal(disconnectPayload.wallet.agentWallet, null);
-    assert.equal(disconnectPayload.wallet.ready, false);
-
-    const disconnectedSigningPayload = await getJson(
-      `/api/receipts/${routePayload.receipt.id}/payment-requirements`,
+    const unknownSourcePaymentResponse = await fetch(
+      `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: routePayload.receipt.accessToken,
+          payments: [{ sourceId: 'not-on-this-receipt', paymentPayload: {} }],
+        }),
+      },
     );
-    assert.equal(disconnectedSigningPayload.payer, null);
-    assert.equal(disconnectedSigningPayload.requirements[0].typedData, null);
+    const unknownSourcePaymentPayload = await unknownSourcePaymentResponse.json();
+    assert.equal(unknownSourcePaymentResponse.status, 409);
+    assert.equal(
+      unknownSourcePaymentPayload.payment.reason,
+      'Payment approval includes a source that is not on this receipt.',
+    );
+
+    const duplicateSourcePaymentResponse = await fetch(
+      `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: routePayload.receipt.accessToken,
+          payments: [
+            { sourceId: sourcePayload.source.id, paymentPayload: {} },
+            { sourceId: sourcePayload.source.id, paymentPayload: {} },
+          ],
+        }),
+      },
+    );
+    const duplicateSourcePaymentPayload = await duplicateSourcePaymentResponse.json();
+    assert.equal(duplicateSourcePaymentResponse.status, 409);
+    assert.equal(
+      duplicateSourcePaymentPayload.payment.reason,
+      'Payment approval includes the same source more than once.',
+    );
+
+    const malformedPaymentResponse = await fetch(
+      `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: routePayload.receipt.accessToken,
+          payments: [{ sourceId: sourcePayload.source.id, paymentPayload: {} }],
+        }),
+      },
+    );
+    const malformedPaymentPayload = await malformedPaymentResponse.json();
+    assert.equal(malformedPaymentResponse.status, 409);
+    assert.equal(malformedPaymentPayload.payment.reason, 'Payment approval payload is malformed.');
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.prepare("UPDATE research_runs SET payment_status = 'paid' WHERE id = ?").run(
+        routePayload.receipt.id,
+      );
+    } finally {
+      db.close();
+    }
+
+    const duplicatePaymentResponse = await fetch(
+      `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: routePayload.receipt.accessToken,
+          payments: [],
+        }),
+      },
+    );
+    const duplicatePaymentPayload = await duplicatePaymentResponse.json();
+    assert.equal(duplicatePaymentResponse.status, 409);
+    assert.equal(duplicatePaymentPayload.payment.reason, 'Receipt has already been paid.');
+    assert.equal(duplicatePaymentPayload.receipt.paymentStatus, 'paid');
+
+    const publicPaidDetail = await getJson(`/api/sources/${sourcePayload.source.id}`);
+    assert.equal(publicPaidDetail.totals.citations, 1);
+    assert.equal(publicPaidDetail.totals.receipts, 1);
+    assert.equal(publicPaidDetail.totals.quotedAmount, 1);
+    assert.equal(publicPaidDetail.totals.paidAmount, 1);
+    assert.equal(publicPaidDetail.totals.paidCitations, 1);
+    assert.equal(publicPaidDetail.citations.length, 1);
+    assert.equal(publicPaidDetail.citations[0].receiptId, routePayload.receipt.id);
+    assert.equal(publicPaidDetail.citations[0].quotedAmount, 1);
+    assert.equal(publicPaidDetail.citations[0].paidAmount, 1);
+
+    const unsignedSigningPayload = await getJson(
+      `/api/receipts/${routePayload.receipt.id}/payment-requirements?${receiptAccess}`,
+    );
+    assert.equal(unsignedSigningPayload.payer, null);
+    assert.equal(unsignedSigningPayload.requirements[0].typedData, null);
+
+    const invalidPayerResponse = await fetch(
+      `${baseUrl}/api/receipts/${routePayload.receipt.id}/payment-requirements?${receiptAccess}&payer=not-a-wallet`,
+    );
+    const invalidPayerPayload = await invalidPayerResponse.json();
+    assert.equal(invalidPayerResponse.status, 400);
+    assert.equal(invalidPayerPayload.error, 'Payer wallet must be a valid EVM address.');
 
     const removedInternalRoute = await fetch(`${baseUrl}/api/agent/route`, {
       method: 'POST',
@@ -267,6 +651,64 @@ test('source detail reflects real routed citation history', async () => {
     const archivePayload = await archiveResponse.json();
     assert.equal(archiveResponse.status, 200);
     assert.equal(archivePayload.ok, true);
+  } finally {
+    server.kill();
+    await onceExit(server);
+    await rm(dbPath, { force: true });
+    await rm(`${dbPath}-shm`, { force: true });
+    await rm(`${dbPath}-wal`, { force: true });
+  }
+});
+
+test('rate limits wallet auth challenges by client', async () => {
+  const port = await getAvailablePort();
+  baseUrl = `http://127.0.0.1:${port}`;
+  const dbPath = join(process.cwd(), 'data', 'rate-limit-test.sqlite');
+  await rm(dbPath, { force: true });
+  await rm(`${dbPath}-shm`, { force: true });
+  await rm(`${dbPath}-wal`, { force: true });
+
+  const server = spawn(process.execPath, ['server/index.mjs'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SOURCEPAY_DB_PATH: dbPath,
+      ARC_RPC_URL: 'https://rpc.testnet.arc.network',
+      SOURCEPAY_DISABLE_LOCAL_SIGNING: '1',
+      SOURCEPAY_AUTH_LIMIT: '1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let serverError = '';
+  server.stderr.on('data', (chunk) => {
+    serverError += chunk;
+  });
+
+  try {
+    await waitForHealth(() => serverError);
+
+    const body = {
+      wallet: '0x3333333333333333333333333333333333333333',
+      purpose: 'buyer-receipts',
+    };
+    const firstResponse = await fetch(`${baseUrl}/api/auth/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assert.equal(firstResponse.status, 201);
+
+    const secondResponse = await fetch(`${baseUrl}/api/auth/challenge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const secondPayload = await secondResponse.json();
+    assert.equal(secondResponse.status, 429);
+    assert.match(secondResponse.headers.get('retry-after') ?? '', /^\d+$/u);
+    assert.equal(secondPayload.error, 'Too many requests. Please wait and try again.');
+    assert.equal(secondPayload.retryAfter > 0, true);
   } finally {
     server.kill();
     await onceExit(server);

@@ -9,7 +9,6 @@ import {
   ExternalLink,
   FileText,
   Filter,
-  Pencil,
   MessageSquareText,
   Mic2,
   Play,
@@ -76,9 +75,12 @@ type Receipt = {
   rail: string;
   network: string;
   readyForSettlement?: boolean;
+  accessToken?: string | null;
+  buyerWallet?: string;
   createdAt: string;
   sources: RegistrySource[];
   paymentAttempts?: PaymentAttempt[];
+  paymentSettlements?: PaymentSettlement[];
 };
 
 type PaymentRequirement = {
@@ -112,11 +114,26 @@ type PaymentAttempt = {
   createdAt: string;
 };
 
+type PaymentSettlement = {
+  id: string;
+  attemptId: string;
+  runId: string;
+  sourceId: string;
+  payer: string;
+  payTo: string;
+  amount: string;
+  transactionId: string;
+  network: string;
+  createdAt: string;
+};
+
 type CreatorEarnings = {
   wallet: string;
   totals: {
     citations: number;
     quotedAmount: number;
+    paidAmount: number;
+    paidCitations: number;
     sources: number;
   };
   sources: Array<{
@@ -126,6 +143,7 @@ type CreatorEarnings = {
     fingerprint?: string;
     citations: number;
     quotedAmount: number;
+    paidAmount: number;
   }>;
   receipts: Array<{
     receiptId: string;
@@ -143,6 +161,7 @@ type CreatorEarnings = {
     };
     rank: number;
     quotedAmount: number;
+    paidAmount: number;
   }>;
 };
 
@@ -151,6 +170,8 @@ type SourceDetail = {
   totals: {
     citations: number;
     quotedAmount: number;
+    paidAmount: number;
+    paidCitations: number;
     receipts: number;
   };
   citations: Array<{
@@ -162,6 +183,7 @@ type SourceDetail = {
     createdAt: string;
     rank: number;
     quotedAmount: number;
+    paidAmount: number;
   }>;
 };
 
@@ -184,13 +206,6 @@ type WalletBalanceCheck = {
   error: string;
 };
 
-type WalletConfig = {
-  agentWallet: string | null;
-  network: string;
-  ready: boolean;
-  updatedAt?: string;
-};
-
 type PaymentReadiness = {
   ready: boolean;
   network: string;
@@ -204,9 +219,16 @@ type PaymentReadiness = {
     supported: boolean;
   };
   x402Version: number;
+  gateway: {
+    url: string;
+    checked: boolean;
+    reachable: boolean | null;
+    arcTestnetSupported: boolean | null;
+    error: string;
+  };
   requirements: {
-    agentWallet: boolean;
     rpcUrl: boolean;
+    gateway: boolean;
   };
 };
 
@@ -231,6 +253,14 @@ type SafeConfig = {
   };
 };
 
+type WalletAuthChallenge = {
+  id: string;
+  wallet: string;
+  purpose: string;
+  message: string;
+  expiresAt: number;
+};
+
 type EthereumProvider = {
   request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
 };
@@ -248,6 +278,8 @@ declare global {
     ethereum?: EthereumProvider;
   }
 }
+
+const DEFAULT_TESTNET_FAUCET_URL = 'https://faucet.circle.com';
 
 const HERO_SOURCES: HeroSource[] = [
   {
@@ -287,7 +319,7 @@ const HERO_SOURCES: HeroSource[] = [
     id: 'settlement-proof',
     label: 'Payment proof',
     type: 'Receipt',
-    price: 'USDC on Arc',
+    price: 'USDC on Arc Testnet',
     paid: 'verifiable trail',
     bg: '#5FA9FF',
     panel: '#82BEFF',
@@ -378,15 +410,15 @@ function formatUsdcAtomic(value: bigint | null) {
 
 async function readUsdcBalance({
   provider,
-  receiptId,
+  receipt,
   wallet,
 }: {
   provider: EthereumProvider;
-  receiptId: string;
+  receipt: Receipt;
   wallet: string;
 }) {
   const payload = await requestJson<ReceiptPaymentRequirements>(
-    `/api/receipts/${receiptId}/payment-requirements`,
+    `/api/receipts/${receipt.id}/payment-requirements${receiptAccessQuery(receipt)}`,
   );
   const firstRequirement = payload.requirements[0]?.requirements;
   if (!firstRequirement) {
@@ -601,6 +633,36 @@ function paymentStateCopy(status: string) {
   return 'Review the selected sources and settle payment when ready.';
 }
 
+function isPublicReceiptStatus(status: string | undefined) {
+  return status === 'paid' || status === 'settled';
+}
+
+function receiptAccessQuery(receipt: Pick<Receipt, 'accessToken'> | null | undefined) {
+  return receipt?.accessToken ? `?access=${encodeURIComponent(receipt.accessToken)}` : '';
+}
+
+function receiptAccessBody(receipt: Pick<Receipt, 'accessToken'> | null | undefined) {
+  return receipt?.accessToken ? { accessToken: receipt.accessToken } : {};
+}
+
+function apiPath(path: string, params: Record<string, string | null | undefined> = {}) {
+  const searchParams = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value) searchParams.set(key, value);
+  });
+  const query = searchParams.toString();
+  return query ? `${path}?${query}` : path;
+}
+
+function receiptDisplayUrl(id: string, receipt: Pick<Receipt, 'accessToken' | 'paymentStatus'> | null) {
+  if (typeof window === 'undefined') return id;
+  const baseUrl = `${window.location.origin}/receipt/${id}`;
+  if (receipt?.accessToken && !isPublicReceiptStatus(receipt.paymentStatus)) {
+    return `${baseUrl}?access=${encodeURIComponent(receipt.accessToken)}`;
+  }
+  return baseUrl;
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   const controller = new AbortController();
@@ -775,7 +837,7 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
       </div>
 
       <div className="absolute right-4 top-6 z-[60] hidden items-center gap-4 text-xs font-semibold uppercase tracking-[0.14em] text-white/90 sm:flex">
-        <span>Arc</span>
+        <span>Arc Testnet</span>
         <span>USDC</span>
         <span>x402</span>
       </div>
@@ -848,7 +910,7 @@ function LandingPage({ onLaunch }: { onLaunch: () => void }) {
         </p>
         <p className="mb-5 hidden text-sm leading-[1.6] text-white opacity-85 sm:block">
           Agents buy the source material they use: articles, posts, transcripts,
-          and receipts settled as USDC nanopayments on Arc.
+          and receipts settled as USDC nanopayments on Arc Testnet.
         </p>
         <div className="flex gap-3">
           <button
@@ -942,7 +1004,6 @@ function PlatformPage({
   const [enabledTypes, setEnabledTypes] = useState<SourceKind[]>(SOURCE_KINDS);
   const [sources, setSources] = useState<RegistrySource[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
-  const [walletConfig, setWalletConfig] = useState<WalletConfig | null>(null);
   const [paymentReadiness, setPaymentReadiness] = useState<PaymentReadiness | null>(
     null,
   );
@@ -962,13 +1023,13 @@ function PlatformPage({
   });
 
   const readinessRequirements = [
-    ['Wallet', Boolean(connectedWallet.address || walletConfig?.agentWallet)],
-    ['Arc connection', paymentReadiness?.requirements.rpcUrl],
+    ['Wallet', Boolean(connectedWallet.address)],
+    ['Arc Testnet connection', paymentReadiness?.requirements.rpcUrl],
+    ['Circle Gateway', paymentReadiness?.requirements.gateway],
   ] satisfies Array<[string, boolean | undefined]>;
 
   const payableReceipts = receipts.filter((item) => item.sources.length > 0);
-  const activeReceipt =
-    receipt && receipt.sources.length > 0 ? receipt : payableReceipts[0] ?? receipt;
+  const activeReceipt = receipt;
   const selectedSources = activeReceipt?.sources ?? [];
   const totalSpend = activeReceipt?.totalSpend ?? 0;
   const walletBalanceCopy = walletBalanceCheck.checking
@@ -976,7 +1037,7 @@ function PlatformPage({
     : walletBalanceCheck.enough === true
       ? 'Enough USDC'
       : walletBalanceCheck.enough === false
-        ? 'Low USDC'
+        ? 'Low wallet USDC'
         : connectedWallet.address
           ? 'Check unavailable'
           : 'Connect wallet';
@@ -1049,7 +1110,7 @@ function PlatformPage({
       .then(() =>
         readUsdcBalance({
           provider,
-          receiptId: activeReceipt.id,
+          receipt: activeReceipt,
           wallet: connectedWallet.address as string,
         }),
       )
@@ -1097,7 +1158,7 @@ function PlatformPage({
 
   const refreshPaymentReadiness = async () => {
     const payload = await requestJson<{ payment: PaymentReadiness }>(
-      '/api/payment-readiness',
+      '/api/payment-readiness?check=gateway',
     );
     setPaymentReadiness(payload.payment);
   };
@@ -1114,27 +1175,57 @@ function PlatformPage({
       .catch((requestError: Error) => setError(requestError.message));
   }, []);
 
-  useEffect(() => {
-    let ignore = false;
-
-    requestJson<{ wallet: WalletConfig }>('/api/wallet')
-      .then((payload) => {
-        if (ignore) return;
-        setWalletConfig(payload.wallet);
-      })
-      .catch((requestError: Error) => {
-        if (!ignore) setError(requestError.message);
-      });
-
-    return () => {
-      ignore = true;
-    };
-  }, []);
-
   const refreshReceipts = async () => {
     const payload = await requestJson<{ receipts: Receipt[] }>('/api/receipts');
     setReceipts(payload.receipts);
-    setReceipt((current) => current ?? payload.receipts.find((item) => item.sources.length > 0) ?? null);
+  };
+
+  const loadBuyerReceipts = async () => {
+    const provider = getEthereumProvider();
+    if (!provider) {
+      setError('Connect the buyer wallet before loading your receipts.');
+      return;
+    }
+
+    setError('');
+    try {
+      let signer = connectedWallet.address;
+      if (!signer) {
+        signer = await onConnectWallet();
+      } else {
+        await ensureArcNetwork(provider);
+      }
+      if (!signer) {
+        throw new Error('Connect the buyer wallet before loading your receipts.');
+      }
+
+      const challengePayload = await requestJson<{ challenge: WalletAuthChallenge }>(
+        '/api/auth/challenge',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            wallet: signer,
+            purpose: 'buyer-receipts',
+          }),
+        },
+      );
+      const authSignature = await provider.request({
+        method: 'personal_sign',
+        params: [challengePayload.challenge.message, signer],
+      });
+      const payload = await requestJson<{ receipts: Receipt[] }>('/api/buyer/receipts', {
+        method: 'POST',
+        body: JSON.stringify({
+          wallet: signer,
+          ownerWallet: signer,
+          challengeId: challengePayload.challenge.id,
+          authSignature: String(authSignature),
+        }),
+      });
+      setReceipts(payload.receipts);
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    }
   };
 
   useEffect(() => {
@@ -1167,10 +1258,14 @@ function PlatformPage({
           question,
           budget,
           kinds: enabledTypes,
+          buyerWallet: connectedWallet.address || '',
         }),
       });
       setReceipt(payload.receipt);
-      await refreshReceipts();
+      setReceipts((current) => [
+        payload.receipt,
+        ...current.filter((item) => item.id !== payload.receipt.id),
+      ]);
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
@@ -1183,8 +1278,6 @@ function PlatformPage({
     try {
       await onConnectWallet();
       await refreshPaymentReadiness();
-      const payload = await requestJson<{ wallet: WalletConfig }>('/api/wallet');
-      setWalletConfig(payload.wallet);
     } catch (requestError) {
       setError((requestError as Error).message);
     }
@@ -1194,8 +1287,6 @@ function PlatformPage({
     setError('');
     try {
       await onDisconnectWallet();
-      const payload = await requestJson<{ wallet: WalletConfig }>('/api/wallet');
-      setWalletConfig(payload.wallet);
       await refreshPaymentReadiness();
     } catch (requestError) {
       setError((requestError as Error).message);
@@ -1231,26 +1322,14 @@ function PlatformPage({
               <ArrowLeft size={17} strokeWidth={2.25} />
               Landing
             </button>
-            {connectedWallet.address ? (
-              <button
-                type="button"
-                onClick={disconnectWalletFromPage}
-                className="flex min-h-10 items-center gap-2 rounded-full border border-[#F4845F]/35 px-3 py-2 text-sm font-bold text-[#F7B49D] transition hover:border-[#F4845F]/65 hover:text-white sm:px-4"
-              >
-                <Wallet size={16} strokeWidth={2.25} />
-                Disconnect {maskAddress(connectedWallet.address)}
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={connectWalletFromPage}
-                disabled={isConnectingWallet}
-                className="flex min-h-10 items-center gap-2 rounded-full border border-white/14 px-3 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white disabled:cursor-not-allowed disabled:opacity-45 sm:px-4"
-              >
-                <Wallet size={16} strokeWidth={2.25} />
-                {isConnectingWallet ? 'Connecting' : 'Connect wallet'}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setActiveTab('Wallet')}
+              className="flex min-h-10 items-center gap-2 rounded-full border border-white/14 px-3 py-2 text-sm font-bold text-white/72 transition hover:border-white/40 hover:text-white sm:px-4"
+            >
+              <Wallet size={16} strokeWidth={2.25} />
+              Wallet
+            </button>
             <button
               type="button"
               onClick={onOpenCreator}
@@ -1270,7 +1349,7 @@ function PlatformPage({
                 { label: 'Sources', icon: Database },
                 { label: 'Payments', icon: ReceiptText },
                 { label: 'Policy', icon: ShieldCheck },
-                { label: 'Wallet', icon: Server },
+                { label: 'Wallet', icon: Wallet },
               ].map(({ label, icon: Icon }) => (
                 <button
                   key={label}
@@ -1299,7 +1378,7 @@ function PlatformPage({
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-white/55">Network</span>
-                  <span className="font-bold">Arc</span>
+                  <span className="font-bold">Arc Testnet</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-white/55">Payment</span>
@@ -1336,7 +1415,7 @@ function PlatformPage({
 
             <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard
-                label="Discoverable sources"
+                label="Marketplace sources"
                 value={discoveredSources.length.toString()}
                 icon={Database}
               />
@@ -1351,7 +1430,7 @@ function PlatformPage({
                 icon={Wallet}
               />
               <MetricCard
-                label="Wallet balance"
+                label="Wallet USDC"
                 value={walletBalanceCopy}
                 icon={Server}
               />
@@ -1577,7 +1656,7 @@ function PlatformPage({
                           ['Receipt', activeReceipt?.id.slice(0, 8) ?? 'Awaiting route'],
                           ['Sources', selectedSources.length.toString()],
                           [
-                            'Wallet balance',
+                            'Wallet USDC',
                             walletBalanceCheck.balance === null
                               ? walletBalanceCopy
                               : `${formatUsdcAtomic(walletBalanceCheck.balance)} USDC`,
@@ -1618,10 +1697,10 @@ function PlatformPage({
                           {walletBalanceCheck.checking
                             ? 'Checking wallet USDC balance...'
                             : walletBalanceCheck.enough === false
-                              ? 'Wallet balance is below the quoted receipt amount.'
+                              ? 'Wallet USDC is below the quote. Payment can still proceed if Circle Gateway balance is funded.'
                               : walletBalanceCheck.enough === true
-                                ? 'Wallet has enough USDC for this quoted receipt.'
-                                : walletBalanceCheck.error || 'Wallet balance could not be checked.'}
+                                ? 'Wallet has enough USDC for this quote.'
+                                : walletBalanceCheck.error || 'Wallet USDC balance could not be checked.'}
                         </p>
                       )}
                       <button
@@ -1647,9 +1726,9 @@ function PlatformPage({
               <section className="overflow-hidden rounded-[8px] border border-white/10 bg-[#111]/90">
                 <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
                   <div>
-                    <p className="text-sm font-bold">Source discovery</p>
+                    <p className="text-sm font-bold">Marketplace discovery</p>
                     <p className="text-xs text-white/45">
-                      Search registered creator sources before routing.
+                      Search public creator sources available for routing.
                     </p>
                   </div>
                   <button
@@ -1785,11 +1864,22 @@ function PlatformPage({
 
             {activeTab === 'Payments' && (
               <section className="rounded-[8px] border border-white/10 bg-[#111]/90">
-                <div className="border-b border-white/10 px-4 py-3">
-                  <p className="text-sm font-bold">Settlement queue</p>
-                  <p className="text-xs text-white/45">
-                    Routed source purchases with selected creator material.
-                  </p>
+                <div className="flex flex-col gap-3 border-b border-white/10 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-bold">Settlement queue</p>
+                    <p className="text-xs text-white/45">
+                      Public paid receipts plus private receipts loaded from the signed buyer wallet.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={loadBuyerReceipts}
+                    disabled={isConnectingWallet}
+                    className="inline-flex items-center justify-center gap-2 rounded-[8px] border border-white/14 px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-white/72 transition hover:border-[#5FA9FF]/70 hover:text-[#9CCCFF] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    <Wallet size={15} strokeWidth={2.25} />
+                    My receipts
+                  </button>
                 </div>
                 <div className="divide-y divide-white/[0.06]">
                   {payableReceipts.length === 0 ? (
@@ -1931,7 +2021,7 @@ function PlatformPage({
                   <div className="mt-5 grid gap-3 sm:grid-cols-3">
                     {[
                       ['Payment', 'USDC'],
-                      ['Network', paymentReadiness?.network ?? 'Arc'],
+                      ['Network', paymentReadiness?.network ?? 'Arc Testnet'],
                       [
                         'Payment status',
                         activeReceipt ? formatStatus(activeReceipt.paymentStatus) : 'Quoted',
@@ -1956,9 +2046,9 @@ function PlatformPage({
               <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
                 <section className="rounded-[8px] border border-white/10 bg-[#111]/90">
                   <div className="border-b border-white/10 px-4 py-3">
-                    <p className="text-sm font-bold">Connected wallet</p>
+                    <p className="text-sm font-bold">Payment wallet</p>
                     <p className="text-xs text-white/45">
-                      Your wallet pays creators when a receipt is settled.
+                      Used for buyer receipt recovery and Arc Testnet USDC payments.
                     </p>
                   </div>
                   <div className="space-y-3 p-4">
@@ -1984,7 +2074,7 @@ function PlatformPage({
                     </div>
                     {connectedWallet.address && (
                       <div className="rounded-[8px] border border-[#5FBF7A]/25 bg-[#5FBF7A]/10 p-3 text-sm">
-                        <p className="font-bold text-[#8CE0A0]">Wallet connected</p>
+                        <p className="font-bold text-[#8CE0A0]">Payment wallet connected for this browser session</p>
                         <p className="mt-1 break-all font-mono text-xs text-white/55">
                           {maskAddress(connectedWallet.address)}
                         </p>
@@ -2036,10 +2126,25 @@ function PlatformPage({
                           </span>
                         </div>
                         <div className="flex justify-between gap-3">
+                          <span className="text-white/45">Gateway</span>
+                          <span className="font-semibold">
+                            {paymentReadiness?.gateway.checked
+                              ? paymentReadiness.requirements.gateway
+                                ? 'Ready'
+                                : 'Action needed'
+                              : 'Checking'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between gap-3">
                           <span className="text-white/45">Wallet guard</span>
                           <span className="font-semibold">Switches before payment</span>
                         </div>
                       </div>
+                      {paymentReadiness?.gateway.error && (
+                        <p className="mt-3 rounded-[8px] border border-[#F4845F]/35 bg-[#F4845F]/12 px-3 py-2 text-xs font-semibold leading-relaxed text-[#F7B49D]">
+                          {paymentReadiness.gateway.error}
+                        </p>
+                      )}
                     </div>
                   )}
                   <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-white/46">
@@ -2050,12 +2155,20 @@ function PlatformPage({
                 </section>
 
                 <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4 xl:col-span-2">
+                  {(() => {
+                    const faucetUrl =
+                      safeConfig?.faucetUrls.usdc ||
+                      safeConfig?.faucetUrls.arc ||
+                      DEFAULT_TESTNET_FAUCET_URL;
+
+                    return (
+                      <>
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div>
                       <p className="text-sm font-bold">Testnet funds</p>
                       <p className="mt-1 max-w-2xl text-sm leading-relaxed text-white/55">
-                        Claim testnet USDC for Arc gas and creator payments, then
-                        return here and connect the funded wallet.
+                        Open Circle Faucet, select Arc Testnet, claim USDC to the connected
+                        wallet, then return here to pay creator receipts.
                       </p>
                     </div>
                     {connectedWallet.address && (
@@ -2065,35 +2178,28 @@ function PlatformPage({
                     )}
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                    {safeConfig?.faucetUrls.usdc || safeConfig?.faucetUrls.arc ? (
                       <a
-                        href={safeConfig.faucetUrls.usdc || safeConfig.faucetUrls.arc || '#'}
+                        href={faucetUrl}
                         target="_blank"
                         rel="noreferrer"
                         className="flex items-center justify-center gap-2 rounded-[8px] bg-white px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF]"
                       >
-                        Claim testnet USDC
+                        Open Circle Faucet
                         <ExternalLink size={16} strokeWidth={2.25} />
                       </a>
-                    ) : (
-                      <button
-                        type="button"
-                        disabled
-                        className="rounded-[8px] border border-white/10 px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-white/30"
-                      >
-                        Claim testnet USDC
-                      </button>
-                    )}
                     <div className="rounded-[8px] border border-white/10 bg-white/[0.025] px-4 py-3 text-sm font-semibold leading-relaxed text-white/55">
-                      Arc uses USDC for transaction fees and creator payouts.
+                      Arc Testnet uses USDC for transaction fees and creator payouts. Circle
+                      Faucet may ask you to paste the connected wallet address.
                     </div>
                   </div>
-                  {(!safeConfig?.faucetUrls.arc || !safeConfig?.faucetUrls.usdc) && (
-                    <p className="mt-3 text-xs font-medium leading-relaxed text-white/38">
-                      Faucet links are configured by the SourcePay operator for the current
-                      Arc testnet event.
+                  {connectedWallet.address && (
+                    <p className="mt-3 break-all rounded-[8px] border border-white/10 bg-white/[0.025] px-3 py-2 font-mono text-xs font-semibold text-white/45">
+                      {connectedWallet.address}
                     </p>
                   )}
+                      </>
+                    );
+                  })()}
                 </section>
               </div>
             )}
@@ -2144,6 +2250,7 @@ function CreatorPage({
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
 
+  const sourceWalletFilter = connectedWallet.address || draft.wallet.trim();
   const creatorSources = sources.filter(
     (source) =>
       draft.wallet.trim() &&
@@ -2160,8 +2267,18 @@ function CreatorPage({
 
   useEffect(() => {
     let ignore = false;
+    const wallet = sourceWalletFilter.trim();
 
-    requestJson<{ sources: RegistrySource[] }>('/api/sources')
+    if (!wallet || !wallet.startsWith('0x') || wallet.length !== 42) {
+      setSources([]);
+      return () => {
+        ignore = true;
+      };
+    }
+
+    requestJson<{ sources: RegistrySource[] }>(
+      `/api/sources?wallet=${encodeURIComponent(wallet)}`,
+    )
       .then((payload) => {
         if (!ignore) setSources(payload.sources);
       })
@@ -2172,37 +2289,76 @@ function CreatorPage({
     return () => {
       ignore = true;
     };
-  }, []);
+  }, [sourceWalletFilter]);
 
   useEffect(() => {
-    const wallet = draft.wallet.trim();
-    let ignore = false;
+    setEarnings(null);
+  }, [draft.wallet]);
 
-    if (!wallet) {
-      setEarnings(null);
-      return () => {
-        ignore = true;
-      };
+  const loadCreatorEarnings = async () => {
+    const wallet = draft.wallet.trim();
+    if (!wallet || !wallet.startsWith('0x') || wallet.length !== 42) {
+      setError('Enter a valid payout wallet before viewing earnings.');
+      setNotice('');
+      return;
+    }
+
+    const provider = getEthereumProvider();
+    if (!provider) {
+      setError('Connect the payout wallet before viewing earnings.');
+      setNotice('');
+      return;
     }
 
     setIsLoadingEarnings(true);
-    requestJson<{ earnings: CreatorEarnings }>(
-      `/api/creator-earnings?wallet=${encodeURIComponent(wallet)}`,
-    )
-      .then((payload) => {
-        if (!ignore) setEarnings(payload.earnings);
-      })
-      .catch((requestError: Error) => {
-        if (!ignore && wallet.length >= 42) setError(requestError.message);
-      })
-      .finally(() => {
-        if (!ignore) setIsLoadingEarnings(false);
-      });
+    setError('');
+    setNotice('');
 
-    return () => {
-      ignore = true;
-    };
-  }, [draft.wallet]);
+    try {
+      let signer = connectedWallet.address;
+      if (!signer) {
+        signer = await onConnectWallet();
+      } else {
+        await ensureArcNetwork(provider);
+      }
+      if (!signer) {
+        throw new Error('Connect the payout wallet before viewing earnings.');
+      }
+      if (signer.toLowerCase() !== wallet.toLowerCase()) {
+        throw new Error('The connected wallet must match the payout wallet.');
+      }
+
+      const challengePayload = await requestJson<{ challenge: WalletAuthChallenge }>(
+        '/api/auth/challenge',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            wallet,
+            purpose: 'creator-earnings',
+          }),
+        },
+      );
+      const authSignature = await provider.request({
+        method: 'personal_sign',
+        params: [challengePayload.challenge.message, signer],
+      });
+      const payload = await requestJson<{ earnings: CreatorEarnings }>('/api/creator-earnings', {
+        method: 'POST',
+        body: JSON.stringify({
+          wallet,
+          ownerWallet: signer,
+          challengeId: challengePayload.challenge.id,
+          authSignature: String(authSignature),
+        }),
+      });
+      setEarnings(payload.earnings);
+      setNotice('Earnings loaded for the connected payout wallet.');
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setIsLoadingEarnings(false);
+    }
+  };
 
   const prepareSource = async () => {
     const material = draft.url.trim() || draft.content.trim() || draft.title.trim();
@@ -2891,14 +3047,6 @@ function CreatorPage({
                               <div className="mt-3 flex gap-2 sm:justify-end">
                                 <button
                                   type="button"
-                                  aria-label={`Edit ${source.title}`}
-                                  onClick={() => beginEditSource(source)}
-                                  className="rounded-[8px] border border-white/10 p-2 text-white/55 transition hover:border-white/35 hover:text-white"
-                                >
-                                  <Pencil size={15} strokeWidth={2.25} />
-                                </button>
-                                <button
-                                  type="button"
                                   aria-label={`Archive ${source.title}`}
                                   onClick={() => archiveSource(source)}
                                   className="rounded-[8px] border border-white/10 p-2 text-white/55 transition hover:border-[#F4845F]/50 hover:text-[#F7B49D]"
@@ -2926,7 +3074,7 @@ function CreatorPage({
               <div>
                 <p className="text-sm font-bold">Earnings</p>
                 <p className="text-xs text-white/45">
-                  Citation activity for the payout wallet in the registration form.
+                  Paid and quoted citation activity for the payout wallet in the registration form.
                 </p>
               </div>
               <div className="rounded-[8px] border border-white/10 bg-white/[0.035] px-3 py-2 text-right">
@@ -2937,22 +3085,46 @@ function CreatorPage({
                   {earnings?.wallet || 'Enter wallet'}
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={loadCreatorEarnings}
+                disabled={isLoadingEarnings || !draft.wallet.trim()}
+                className="rounded-[8px] border border-white/18 px-4 py-2 text-xs font-extrabold uppercase tracking-[0.12em] text-white transition hover:border-[#7CE38B]/70 hover:text-[#7CE38B] disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {isLoadingEarnings ? 'Loading' : 'View earnings'}
+              </button>
             </div>
 
             {!draft.wallet.trim() ? (
               <div className="px-4 py-10 text-center text-sm font-medium text-white/42">
-                Enter a payout wallet to view citation earnings.
+                Enter or connect a payout wallet to view citation earnings.
               </div>
             ) : isLoadingEarnings ? (
               <div className="px-4 py-10 text-center text-sm font-medium text-white/42">
                 Loading earnings.
               </div>
+            ) : !earnings ? (
+              <div className="px-4 py-10 text-center text-sm font-medium text-white/42">
+                Sign with the payout wallet to view private earnings.
+              </div>
             ) : (
               <>
-                <div className="grid gap-3 border-b border-white/10 p-4 sm:grid-cols-3">
+                <div className="grid gap-3 border-b border-white/10 p-4 sm:grid-cols-4">
                   {[
-                    ['Quoted earnings', `${formatUsd(earnings?.totals.quotedAmount ?? 0)} USDC`],
-                    ['Citations', String(earnings?.totals.citations ?? 0)],
+                    ['Paid earnings', `${formatUsd(earnings?.totals.paidAmount ?? 0)} USDC`],
+                    [
+                      'Quoted pending',
+                      `${formatUsd(
+                        (earnings?.totals.quotedAmount ?? 0) -
+                          (earnings?.totals.paidAmount ?? 0),
+                      )} USDC`,
+                    ],
+                    [
+                      'Paid citations',
+                      `${earnings?.totals.paidCitations ?? 0} / ${
+                        earnings?.totals.citations ?? 0
+                      }`,
+                    ],
                     ['Cited sources', String(earnings?.totals.sources ?? 0)],
                   ].map(([label, value]) => (
                     <div
@@ -2990,9 +3162,16 @@ function CreatorPage({
                         <p className="text-sm font-semibold text-white/64">
                           {formatStatus(item.paymentStatus)}
                         </p>
-                        <p className="text-left text-sm font-bold text-white/78 md:text-right">
-                          {formatUsd(item.quotedAmount)} USDC
-                        </p>
+                        <div className="text-left md:text-right">
+                          <p className="text-sm font-bold text-white/78">
+                            {formatUsd(item.paidAmount)} USDC paid
+                          </p>
+                          {item.quotedAmount > item.paidAmount && (
+                            <p className="mt-1 text-xs font-semibold text-white/38">
+                              {formatUsd(item.quotedAmount - item.paidAmount)} USDC quoted
+                            </p>
+                          )}
+                        </div>
                       </div>
                     ))
                   )}
@@ -3131,7 +3310,7 @@ function SourcePage({
 
               <div className="p-4">
                 <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
-                  Source text
+                  Source preview
                 </p>
                 <div className="max-h-[360px] overflow-auto rounded-[8px] border border-white/10 bg-black/24 p-4 text-sm font-medium leading-7 text-white/68">
                   {source.content}
@@ -3149,8 +3328,15 @@ function SourcePage({
                 </div>
                 <div className="grid gap-3 p-4">
                   {[
-                    ['Quoted earnings', `${formatUsd(detail.totals.quotedAmount)} USDC`],
-                    ['Citations', String(detail.totals.citations)],
+                    ['Paid earnings', `${formatUsd(detail.totals.paidAmount)} USDC`],
+                    [
+                      'Quoted pending',
+                      `${formatUsd(detail.totals.quotedAmount - detail.totals.paidAmount)} USDC`,
+                    ],
+                    [
+                      'Paid citations',
+                      `${detail.totals.paidCitations} / ${detail.totals.citations}`,
+                    ],
                     ['Receipts', String(detail.totals.receipts)],
                   ].map(([label, value]) => (
                     <div
@@ -3191,7 +3377,12 @@ function SourcePage({
                         </p>
                         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs font-semibold text-white/45">
                           <span>{formatStatus(citation.paymentStatus)}</span>
-                          <span>{formatUsd(citation.quotedAmount)} USDC</span>
+                          <span>{formatUsd(citation.paidAmount)} paid</span>
+                          {citation.quotedAmount > citation.paidAmount && (
+                            <span>
+                              {formatUsd(citation.quotedAmount - citation.paidAmount)} quoted
+                            </span>
+                          )}
                         </div>
                       </button>
                     ))
@@ -3209,6 +3400,7 @@ function SourcePage({
 function ReceiptPage({
   id,
   initialReceipt,
+  initialAccessToken,
   onBack,
   connectedWallet,
   onConnectWallet,
@@ -3216,6 +3408,7 @@ function ReceiptPage({
 }: {
   id: string;
   initialReceipt: Receipt | null;
+  initialAccessToken?: string | null;
   onBack: () => void;
   connectedWallet: ConnectedWallet;
   onConnectWallet: () => Promise<string | null>;
@@ -3249,11 +3442,18 @@ function ReceiptPage({
     setReceiptNotice('');
     setVerificationNotice('');
 
-    requestJson<{ receipt: Receipt }>(`/api/receipts/${id}`)
+    const accessToken = initialReceipt?.accessToken ?? initialAccessToken ?? null;
+
+    requestJson<{ receipt: Receipt }>(
+      apiPath(`/api/receipts/${id}`, { access: accessToken }),
+    )
       .then((payload) => {
         if (!ignore) {
           window.clearTimeout(timeoutId);
-          setReceipt(payload.receipt);
+          setReceipt({
+            ...payload.receipt,
+            accessToken: payload.receipt.accessToken ?? accessToken,
+          });
         }
       })
       .catch((requestError: Error) => {
@@ -3271,7 +3471,7 @@ function ReceiptPage({
       ignore = true;
       window.clearTimeout(timeoutId);
     };
-  }, [id, initialReceipt]);
+  }, [id, initialReceipt, initialAccessToken]);
 
   useEffect(() => {
     let ignore = false;
@@ -3317,7 +3517,7 @@ function ReceiptPage({
       .then(() =>
         readUsdcBalance({
           provider,
-          receiptId: receipt.id,
+          receipt,
           wallet: connectedWallet.address as string,
         }),
       )
@@ -3360,11 +3560,6 @@ function ReceiptPage({
         setPaymentNotice('Connect your wallet before settling this receipt.');
         return;
       }
-      if (walletBalanceCheck.enough === false) {
-        setPaymentNotice('Wallet balance is below the quoted receipt amount.');
-        return;
-      }
-
       const provider = getEthereumProvider();
       if (!provider) {
         setPaymentNotice('A browser wallet is required to settle this receipt.');
@@ -3373,7 +3568,10 @@ function ReceiptPage({
       await ensureArcNetwork(provider);
 
       const requirementsPayload = await requestJson<ReceiptPaymentRequirements>(
-        `/api/receipts/${id}/payment-requirements`,
+        apiPath(`/api/receipts/${id}/payment-requirements`, {
+          access: receipt?.accessToken,
+          payer,
+        }),
       );
       const payments = [];
 
@@ -3415,18 +3613,21 @@ function ReceiptPage({
       }
 
       const response = await requestJsonWithStatus<{
-        payment: { status: string; reason: string };
-        receipt: Receipt;
+        payment?: { status: string; reason: string };
+        receipt?: Receipt;
+        error?: string;
       }>(`/api/receipts/${id}/pay`, {
         method: 'POST',
-        body: JSON.stringify({ payments }),
+        body: JSON.stringify({ ...receiptAccessBody(receipt), payments }),
       });
 
-      setReceipt(response.payload.receipt);
+      if (response.payload.receipt) {
+        setReceipt(response.payload.receipt);
+      }
       setPaymentNotice(
         response.ok
           ? 'Creators paid. This receipt is now complete.'
-          : response.payload.payment.reason,
+          : response.payload.payment?.reason || response.payload.error || 'Payment was not completed.',
       );
     } catch (requestError) {
       setPaymentNotice((requestError as Error).message);
@@ -3442,7 +3643,7 @@ function ReceiptPage({
 
     try {
       const payload = await requestJson<{ proof: unknown }>(
-        `/api/receipts/${id}/proof`,
+        `/api/receipts/${id}/proof${receiptAccessQuery(receipt)}`,
       );
       const blob = new Blob([JSON.stringify(payload.proof, null, 2)], {
         type: 'application/json',
@@ -3465,22 +3666,25 @@ function ReceiptPage({
     setPaymentNotice('');
     setReceiptNotice('');
     setVerificationNotice('');
-    const receiptUrl = window.location.href;
+    const isPublicReceipt = isPublicReceiptStatus(receipt?.paymentStatus);
+    const receiptUrl = receiptDisplayUrl(id, receipt);
 
     try {
       if (navigator.share) {
         await navigator.share({
-          title: 'SourcePay receipt',
-          text: `SourcePay receipt ${id.slice(0, 8)}`,
+          title: isPublicReceipt ? 'SourcePay receipt' : 'SourcePay private quote',
+          text: isPublicReceipt
+            ? `SourcePay receipt ${id.slice(0, 8)}`
+            : `Private SourcePay quote ${id.slice(0, 8)}`,
           url: receiptUrl,
         });
-        setReceiptNotice('Receipt share sheet opened.');
+        setReceiptNotice(isPublicReceipt ? 'Receipt share sheet opened.' : 'Private quote share sheet opened.');
         return;
       }
 
       if (navigator.clipboard) {
         await navigator.clipboard.writeText(receiptUrl);
-        setReceiptNotice('Receipt link copied.');
+        setReceiptNotice(isPublicReceipt ? 'Receipt link copied.' : 'Private quote link copied.');
         return;
       }
 
@@ -3493,7 +3697,7 @@ function ReceiptPage({
 
       try {
         await navigator.clipboard.writeText(receiptUrl);
-        setReceiptNotice('Receipt link copied.');
+        setReceiptNotice(isPublicReceipt ? 'Receipt link copied.' : 'Private quote link copied.');
       } catch {
         setReceiptNotice(receiptUrl);
       }
@@ -3508,7 +3712,7 @@ function ReceiptPage({
 
     try {
       const proofPayload = await requestJson<{ proof: unknown }>(
-        `/api/receipts/${id}/proof`,
+        `/api/receipts/${id}/proof${receiptAccessQuery(receipt)}`,
       );
       const verificationPayload = await requestJson<{
         verification: { valid: boolean; reason: string };
@@ -3680,7 +3884,7 @@ function ReceiptPage({
                       ['Budget', `${formatUsd(receipt.budget)} USDC`],
                       ['Sources', receipt.sources.length.toString()],
                       [
-                        'Wallet balance',
+                        'Wallet USDC',
                         walletBalanceCheck.balance === null
                           ? walletBalanceCheck.checking
                             ? 'Checking'
@@ -3714,8 +3918,7 @@ function ReceiptPage({
                     disabled={
                       isPaying ||
                       receipt.sources.length === 0 ||
-                      receipt.paymentStatus === 'paid' ||
-                      walletBalanceCheck.enough === false
+                      isPublicReceiptStatus(receipt.paymentStatus)
                     }
                     className="mt-4 w-full rounded-[8px] bg-white px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
                   >
@@ -3723,12 +3926,10 @@ function ReceiptPage({
                       ? 'Paying creators'
                       : isConnectingWallet
                         ? 'Connecting wallet'
-                      : receipt.paymentStatus === 'paid'
+                      : isPublicReceiptStatus(receipt.paymentStatus)
                         ? 'Paid'
                           : connectedWallet.address
-                            ? walletBalanceCheck.enough === false
-                              ? 'Insufficient USDC'
-                              : 'Pay creators'
+                            ? 'Pay creators'
                             : 'Connect and pay'}
                   </button>
                   {connectedWallet.address && (
@@ -3744,19 +3945,26 @@ function ReceiptPage({
                       {walletBalanceCheck.checking
                         ? 'Checking wallet USDC balance...'
                         : walletBalanceCheck.enough === false
-                          ? 'Wallet balance is below the quoted receipt amount.'
+                          ? 'Wallet USDC is below the quote. Payment can still proceed if Circle Gateway balance is funded.'
                           : walletBalanceCheck.enough === true
                             ? 'Wallet has enough USDC for this receipt.'
-                            : walletBalanceCheck.error || 'Wallet balance could not be checked.'}
+                            : walletBalanceCheck.error || 'Wallet USDC balance could not be checked.'}
                     </p>
                   )}
                   <div className="mt-3 rounded-[8px] border border-white/10 bg-white/[0.025] p-3">
                     <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/38">
-                      Public receipt
+                      {isPublicReceiptStatus(receipt.paymentStatus)
+                        ? 'Public paid receipt'
+                        : 'Private quote link'}
                     </p>
                     <p className="mt-2 break-all font-mono text-xs font-semibold text-white/58">
-                      {typeof window !== 'undefined' ? window.location.href : id}
+                      {receiptDisplayUrl(id, receipt)}
                     </p>
+                    {!isPublicReceiptStatus(receipt.paymentStatus) && (
+                      <p className="mt-2 text-xs font-semibold leading-relaxed text-white/40">
+                        This quote is not public until payment is completed.
+                      </p>
+                    )}
                   </div>
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <button
@@ -3789,7 +3997,7 @@ function ReceiptPage({
                       {paymentNotice && (
                         <p
                           className={`rounded-[8px] border p-3 text-sm font-semibold leading-relaxed ${
-                            receipt.paymentStatus === 'paid'
+                            isPublicReceiptStatus(receipt.paymentStatus)
                               ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
                               : 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
                           }`}
@@ -3840,6 +4048,36 @@ function ReceiptPage({
                     </div>
                   </section>
                 )}
+
+                {receipt.paymentSettlements && receipt.paymentSettlements.length > 0 && (
+                  <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4">
+                    <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
+                      Settlements
+                    </p>
+                    <div className="space-y-3">
+                      {receipt.paymentSettlements.map((settlement) => (
+                        <div
+                          key={settlement.id}
+                          className="rounded-[8px] border border-white/10 bg-white/[0.025] p-3 text-sm"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold">
+                              {formatUsdcAtomic(BigInt(settlement.amount))} USDC
+                            </span>
+                            <span className="text-xs font-semibold text-white/38">
+                              {settlement.network}
+                            </span>
+                          </div>
+                          <div className="mt-2 space-y-1 font-mono text-[11px] text-white/42">
+                            <p>payer {maskAddress(settlement.payer)}</p>
+                            <p>payTo {maskAddress(settlement.payTo)}</p>
+                            <p className="break-all">tx {settlement.transactionId || 'pending'}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
               </aside>
             </div>
           </div>
@@ -3854,6 +4092,10 @@ function App() {
     typeof window !== 'undefined'
       ? window.location.pathname.match(/^\/receipt\/([^/]+)$/)?.[1]
       : undefined;
+  const initialAccessToken =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('access')
+      : null;
   const initialSourceId =
     typeof window !== 'undefined'
       ? window.location.pathname.match(/^\/source\/([^/]+)$/)?.[1]
@@ -3876,23 +4118,7 @@ function App() {
   const [isConnectingWallet, setIsConnectingWallet] = useState(false);
 
   useEffect(() => {
-    let ignore = false;
-
-    requestJson<{ wallet: WalletConfig }>('/api/wallet')
-      .then((payload) => {
-        if (!ignore) {
-          setConnectedWallet({ address: payload.wallet.agentWallet });
-        }
-      })
-      .catch(() => {
-        if (!ignore) {
-          setConnectedWallet({ address: null });
-        }
-      });
-
-    return () => {
-      ignore = true;
-    };
+    setConnectedWallet({ address: null });
   }, []);
 
   const connectWallet = async () => {
@@ -3914,10 +4140,6 @@ function App() {
 
       await ensureArcNetwork(provider);
 
-      await requestJson<{ wallet: WalletConfig }>('/api/wallet', {
-        method: 'POST',
-        body: JSON.stringify({ agentWallet: address, network: 'Arc' }),
-      });
       setConnectedWallet({ address });
       return address;
     } finally {
@@ -3926,9 +4148,6 @@ function App() {
   };
 
   const disconnectWallet = async () => {
-    await requestJson<{ wallet: WalletConfig }>('/api/wallet', {
-      method: 'DELETE',
-    });
     setConnectedWallet({ address: null });
   };
 
@@ -3939,7 +4158,11 @@ function App() {
     setSourceId(nextView === 'source' ? nextId : '');
 
     if (nextView === 'receipt' && nextId) {
-      window.history.pushState(null, '', `/receipt/${nextId}`);
+      const accessQuery =
+        nextReceipt?.accessToken && !isPublicReceiptStatus(nextReceipt.paymentStatus)
+          ? `?access=${encodeURIComponent(nextReceipt.accessToken)}`
+          : '';
+      window.history.pushState(null, '', `/receipt/${nextId}${accessQuery}`);
       return;
     }
 
@@ -3990,6 +4213,7 @@ function App() {
           <ReceiptPage
             id={receiptId}
             initialReceipt={activeReceipt}
+            initialAccessToken={initialAccessToken}
             onBack={() => navigate('platform')}
             connectedWallet={connectedWallet}
             onConnectWallet={connectWallet}
