@@ -487,6 +487,18 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(signingPayload.requirements[0].typedData.domain.chainId, 5042002);
     assert.equal(signingPayload.requirements[0].typedData.paymentPayloadTemplate.x402Version, 2);
     assert.equal(
+      signingPayload.requirements[0].typedData.paymentPayloadTemplate.resource.serviceName,
+      'SourcePay',
+    );
+    assert.equal(
+      signingPayload.requirements[0].typedData.paymentPayloadTemplate.accepted.amount,
+      '1000000',
+    );
+    assert.equal(
+      signingPayload.requirements[0].typedData.paymentPayloadTemplate.accepted.payTo,
+      creatorAccount.address,
+    );
+    assert.equal(
       signingPayload.requirements[0].typedData.paymentPayloadTemplate.payload.authorization.to,
       creatorAccount.address,
     );
