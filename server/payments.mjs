@@ -9,9 +9,20 @@ import { BatchFacilitatorClient } from '@circle-fin/x402-batching/server';
 import { CHAIN_CONFIGS } from '@circle-fin/x402-batching/client';
 import { x402Version } from '@x402/core';
 import { BATCH_SETTLEMENT_SCHEME } from '@x402/evm';
-import { isAddress } from 'viem';
+import { getAddress, isAddress, verifyTypedData } from 'viem';
 import { randomBytes } from 'node:crypto';
 import { privateKeyToAccount } from 'viem/accounts';
+
+const TRANSFER_WITH_AUTHORIZATION_TYPES = {
+  TransferWithAuthorization: [
+    { name: 'from', type: 'address' },
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'validAfter', type: 'uint256' },
+    { name: 'validBefore', type: 'uint256' },
+    { name: 'nonce', type: 'bytes32' },
+  ],
+};
 
 let agentAccount = null;
 const agentKey = process.env.AGENT_PRIVATE_KEY || process.env.AGENT_KEY;
@@ -232,6 +243,12 @@ export async function createPaymentExecution({ receipt, payments }) {
         return;
       }
 
+      const signatureError = await validateLocalPaymentSignature(paymentPayload, requirements);
+      if (signatureError) {
+        errors.push(signatureError);
+        return;
+      }
+
       try {
         const verification = await facilitator.verify(paymentPayload, requirements);
         if (!verification.isValid) {
@@ -342,14 +359,14 @@ function createSourcePaymentRequirements(source) {
   return {
     scheme: CIRCLE_BATCHING_SCHEME,
     network: `eip155:${chain.chain.id}`,
-    asset: chain.usdc,
+    asset: getAddress(chain.usdc),
     amount: usdcToAtomic(source.price),
-    payTo: source.wallet,
+    payTo: getAddress(source.wallet),
     maxTimeoutSeconds: 60,
     extra: {
       name: CIRCLE_BATCHING_NAME,
       version: CIRCLE_BATCHING_VERSION,
-      verifyingContract: chain.gatewayWallet,
+      verifyingContract: getAddress(chain.gatewayWallet),
     },
   };
 }
@@ -362,8 +379,8 @@ function createSigningTypedData({ payer, requirements, source }) {
     now + Math.max(requirements.maxTimeoutSeconds, GATEWAY_AUTH_VALIDITY_WINDOW_SECONDS),
   );
   const authorization = {
-    from: payer,
-    to: requirements.payTo,
+    from: getAddress(payer),
+    to: getAddress(requirements.payTo),
     value: requirements.amount,
     validAfter,
     validBefore,
@@ -375,18 +392,9 @@ function createSigningTypedData({ payer, requirements, source }) {
       name: CIRCLE_BATCHING_NAME,
       version: CIRCLE_BATCHING_VERSION,
       chainId,
-      verifyingContract: requirements.extra.verifyingContract,
+      verifyingContract: getAddress(requirements.extra.verifyingContract),
     },
-    types: {
-      TransferWithAuthorization: [
-        { name: 'from', type: 'address' },
-        { name: 'to', type: 'address' },
-        { name: 'value', type: 'uint256' },
-        { name: 'validAfter', type: 'uint256' },
-        { name: 'validBefore', type: 'uint256' },
-        { name: 'nonce', type: 'bytes32' },
-      ],
-    },
+    types: TRANSFER_WITH_AUTHORIZATION_TYPES,
     primaryType: 'TransferWithAuthorization',
     message: authorization,
     paymentPayloadTemplate: {
@@ -502,6 +510,43 @@ function validatePaymentPayload(paymentPayload, requirements) {
   }
 
   return '';
+}
+
+async function validateLocalPaymentSignature(paymentPayload, requirements) {
+  const authorization = paymentPayload?.payload?.authorization;
+  const signature = String(paymentPayload?.payload?.signature ?? '').trim();
+
+  try {
+    const chainId = Number(requirements.network.split(':')[1]);
+    const signingMessage = {
+      from: getAddress(authorization.from),
+      to: getAddress(authorization.to),
+      value: BigInt(String(authorization.value)),
+      validAfter: BigInt(String(authorization.validAfter)),
+      validBefore: BigInt(String(authorization.validBefore)),
+      nonce: authorization.nonce,
+    };
+
+    const valid = await verifyTypedData({
+      address: signingMessage.from,
+      domain: {
+        name: CIRCLE_BATCHING_NAME,
+        version: CIRCLE_BATCHING_VERSION,
+        chainId,
+        verifyingContract: getAddress(requirements.extra.verifyingContract),
+      },
+      types: TRANSFER_WITH_AUTHORIZATION_TYPES,
+      primaryType: 'TransferWithAuthorization',
+      message: signingMessage,
+      signature,
+    });
+
+    return valid
+      ? ''
+      : 'Payment signature does not match the signed authorization. Reconnect the paying wallet and try again.';
+  } catch {
+    return 'Payment signature could not be verified locally. Reconnect the paying wallet and try again.';
+  }
 }
 
 function sameAddress(left, right) {

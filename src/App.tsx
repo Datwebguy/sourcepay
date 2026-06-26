@@ -4088,6 +4088,10 @@ function ReceiptPage({
           templatePayload?.payload && typeof templatePayload.payload === 'object'
             ? (templatePayload.payload as Record<string, unknown>)
             : {};
+        const templateAuthorization =
+          templateInnerPayload.authorization && typeof templateInnerPayload.authorization === 'object'
+            ? (templateInnerPayload.authorization as Record<string, unknown>)
+            : item.typedData.message;
 
         payments.push({
           sourceId: item.sourceId,
@@ -4096,7 +4100,7 @@ function ReceiptPage({
                 ...templatePayload,
                 payload: {
                   ...templateInnerPayload,
-                  authorization: item.typedData.message,
+                  authorization: templateAuthorization,
                   signature: String(signature),
                 },
               }

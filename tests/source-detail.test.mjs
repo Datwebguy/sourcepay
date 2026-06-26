@@ -582,6 +582,37 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(malformedPaymentResponse.status, 409);
     assert.equal(malformedPaymentPayload.payment.reason, 'Payment approval payload is malformed.');
 
+    const invalidSignaturePaymentResponse = await fetch(
+      `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: routePayload.receipt.accessToken,
+          payments: [
+            {
+              sourceId: sourcePayload.source.id,
+              paymentPayload: {
+                ...signingPayload.requirements[0].typedData.paymentPayloadTemplate,
+                payload: {
+                  ...signingPayload.requirements[0].typedData.paymentPayloadTemplate.payload,
+                  signature: `0x${'11'.repeat(65)}`,
+                },
+              },
+            },
+          ],
+        }),
+      },
+    );
+    const invalidSignaturePaymentPayload = await invalidSignaturePaymentResponse.json();
+    assert.equal(invalidSignaturePaymentResponse.status, 409);
+    assert.match(
+      invalidSignaturePaymentPayload.payment.reason,
+      /Payment signature does not match|Payment signature could not be verified locally/u,
+    );
+    assert.equal(invalidSignaturePaymentPayload.receipt.paymentStatus, 'payment_rejected');
+    assert.equal(invalidSignaturePaymentPayload.receipt.totalSpend, 1);
+
     const db = new DatabaseSync(dbPath);
     try {
       db.prepare("UPDATE research_runs SET payment_status = 'paid' WHERE id = ?").run(
