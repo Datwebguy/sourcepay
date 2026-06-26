@@ -880,9 +880,7 @@ function normalizeSource(row) {
 }
 
 function publicSourceContentPreview(value) {
-  const normalized = normalizeSourceText(value);
-  if (normalized.length <= maxPublicSourceContentLength) return normalized;
-  return `${normalized.slice(0, maxPublicSourceContentLength).trimEnd()}...`;
+  return normalizeSourceText(value);
 }
 
 async function readBody(request) {

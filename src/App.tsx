@@ -2244,33 +2244,33 @@ function PlatformPage({
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">1</span>
                       <div>
                         <p className="font-semibold text-white">Connect Wallet</p>
-                        <p className="text-xs text-white/48 mt-0.5">Click **Browser Wallet** in the top right corner to connect your Web3 account.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Click Browser Wallet in the top right corner to connect your Web3 account.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">2</span>
                       <div>
                         <p className="font-semibold text-white">Route citation request</p>
-                        <p className="text-xs text-white/48 mt-0.5">Go to the **Requests** tab, enter your research question and budget (USDC), and click **Route Request**.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Go to the Requests tab, enter your research question and budget (USDC), and click Route Request.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">3</span>
                       <div>
                         <p className="font-semibold text-white">Settle Receipt</p>
-                        <p className="text-xs text-white/48 mt-0.5">Review matched sources and click **Connect and Pay** to sign EIP-3009 TransferWithAuthorization micro-payments.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Review matched sources and click Connect and Pay to sign EIP-3009 TransferWithAuthorization micro-payments.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">4</span>
                       <div>
                         <p className="font-semibold text-white">Recover receipts</p>
-                        <p className="text-xs text-white/48 mt-0.5">Under the **Payments** tab, connect your buyer wallet and sign the challenge to retrieve all your past invoices.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Under the Payments tab, connect your buyer wallet and sign the challenge to retrieve all your past invoices.</p>
                       </div>
                     </li>
                   </ol>
                   <div className="mt-5 rounded-[8px] bg-white/[0.03] p-3 text-xs leading-relaxed text-white/45 border border-white/5">
-                    <strong>Note:</strong> Set budgets to very low values (e.g. 0.0001 USDC) to test the Arc Net nanopayments zero-dust capability.
+                    Note: Set budgets to very low values (e.g. 0.0001 USDC) to test the Arc Net nanopayments zero-dust capability.
                   </div>
                 </section>
 
@@ -2289,21 +2289,21 @@ function PlatformPage({
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">1</span>
                       <div>
                         <p className="font-semibold text-white">Connect payout wallet</p>
-                        <p className="text-xs text-white/48 mt-0.5">Switch to the **Creator Portal** and connect your payout wallet to register your creator space.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Switch to the Creator Portal and connect your payout wallet to register your creator space.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">2</span>
                       <div>
                         <p className="font-semibold text-white">Register sources</p>
-                        <p className="text-xs text-white/48 mt-0.5">Input a title, optional URL, select a class, define your USDC citation fee, and click **Register Source**.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Input a title, optional URL, select a class, define your USDC citation fee, and click Register Source.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">3</span>
                       <div>
                         <p className="font-semibold text-white">Monitor earnings</p>
-                        <p className="text-xs text-white/48 mt-0.5">Click **View Earnings** under the Creator Portal, and sign the secure wallet challenge to load your revenue dashboard.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Click View Earnings under the Creator Portal, and sign the secure wallet challenge to load your revenue dashboard.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
@@ -2315,7 +2315,7 @@ function PlatformPage({
                     </li>
                   </ol>
                   <div className="mt-5 rounded-[8px] bg-white/[0.03] p-3 text-xs leading-relaxed text-white/45 border border-white/5">
-                    <strong>Note:</strong> Registered source contents are kept private. Only the metadata and transaction counts are visible in the public directory.
+                    Note: Registered source contents are kept private. Only the metadata and transaction counts are visible in the public directory.
                   </div>
                 </section>
               </div>
@@ -4471,7 +4471,21 @@ function ReceiptPage({
                           <div className="mt-2 space-y-1 font-mono text-[11px] text-white/42">
                             <p>payer {maskAddress(settlement.payer)}</p>
                             <p>payTo {maskAddress(settlement.payTo)}</p>
-                            <p className="break-all">tx {settlement.transactionId || 'pending'}</p>
+                            <p className="break-all">
+                              tx{' '}
+                              {settlement.transactionId ? (
+                                <a
+                                  href={`https://testnet.arcscan.app/tx/${settlement.transactionId}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-[#9CCCFF] hover:underline"
+                                >
+                                  {settlement.transactionId}
+                                </a>
+                              ) : (
+                                'pending'
+                              )}
+                            </p>
                           </div>
                         </div>
                       ))}
