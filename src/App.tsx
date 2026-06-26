@@ -1237,6 +1237,12 @@ function PlatformPage({
 
     return matchesClass && matchesSearch && withinBudget;
   });
+
+  // Separate routing-eligible check (not tied to Sources tab search filters)
+  const routingEligibleSources = sources.filter(
+    (source) => enabledTypes.includes(source.kind) && source.price <= budget,
+  );
+
   const hasRegisteredSources = sources.length > 0;
   const requestText = question.trim();
   const routeBlockReason = !hasRegisteredSources
@@ -1245,8 +1251,8 @@ function PlatformPage({
       ? 'Enter a request'
       : enabledTypes.length === 0
         ? 'Select source types'
-        : discoveredSources.length === 0
-          ? 'No matching sources'
+        : routingEligibleSources.length === 0
+          ? 'No sources within budget'
           : '';
 
   useEffect(() => {
@@ -1647,9 +1653,9 @@ function PlatformPage({
           <div className="min-w-0 p-3 sm:p-5">
             <div className="mb-4 grid gap-2 md:grid-cols-3">
               {[
-                ['1', 'Add sources', hasRegisteredSources],
-                ['2', 'Configure Policy', Boolean(connectedWallet.address)],
-                ['3', 'Route request', selectedSources.length > 0],
+                ['1', 'Add creator sources', hasRegisteredSources],
+                ['2', 'Route a request', selectedSources.length > 0],
+                ['3', 'Approve & pay', activeReceipt?.paymentStatus === 'paid'],
               ].map(([step, label, done]) => (
                 <div
                   key={label as string}
@@ -1661,7 +1667,7 @@ function PlatformPage({
                 >
                   <div className="flex items-center gap-2">
                     <span className="flex h-6 w-6 items-center justify-center rounded-full border border-current text-xs font-extrabold">
-                      {step}
+                      {done ? '✓' : step}
                     </span>
                     <span className="font-bold">{label}</span>
                   </div>
@@ -1671,8 +1677,8 @@ function PlatformPage({
 
             <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard
-                label="Marketplace sources"
-                value={discoveredSources.length.toString()}
+                label="Registered sources"
+                value={sources.length.toString()}
                 icon={Database}
               />
               <MetricCard
@@ -1718,7 +1724,7 @@ function PlatformPage({
                   <div className="rounded-[8px] border border-white/10 bg-black/24 p-3">
                     <div className="mb-3 flex items-center justify-between text-sm">
                       <span className="font-bold">${formatUsd(budget, 2)} USDC</span>
-                      <span className="text-white/42">max spend</span>
+                      <span className="text-white/42">per-answer budget</span>
                     </div>
                     <input
                       aria-label="Max spend"
@@ -1747,6 +1753,13 @@ function PlatformPage({
                       }
                       className="mt-3 w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-[#5FA9FF]/80"
                     />
+                    {hasRegisteredSources && (
+                      <p className={`mt-2 text-[11px] ${routingEligibleSources.length === 0 ? 'text-[#F7B49D]' : 'text-white/40'}`}>
+                        {routingEligibleSources.length === 0
+                          ? '⚠ No creator sources fit within this budget — increase the amount above.'
+                          : `✓ ${routingEligibleSources.length} creator source${routingEligibleSources.length !== 1 ? 's' : ''} eligible at this budget`}
+                      </p>
+                    )}
                   </div>
 
                   <div>
@@ -1757,12 +1770,16 @@ function PlatformPage({
                     <div className="grid grid-cols-3 gap-2">
                       {SOURCE_KINDS.map((kind) => {
                         const active = enabledTypes.includes(kind);
+                        const kindCount = sources.filter(
+                          (s) => s.kind === kind && s.price <= budget,
+                        ).length;
 
                         return (
                           <button
                             key={kind}
                             type="button"
                             onClick={() => toggleSourceKind(kind)}
+                            title={`${kindCount} source${kindCount !== 1 ? 's' : ''} available within budget`}
                             className={`rounded-[8px] border px-3 py-2 text-xs font-bold transition ${
                               active
                                 ? 'border-[#5FA9FF]/80 bg-[#5FA9FF]/16 text-white'
@@ -1770,6 +1787,11 @@ function PlatformPage({
                             }`}
                           >
                             {kind}
+                            {kindCount > 0 && (
+                              <span className={`ml-1 text-[10px] ${active ? 'text-[#9CCCFF]' : 'text-white/30'}`}>
+                                ({kindCount})
+                              </span>
+                            )}
                           </button>
                         );
                       })}
@@ -1783,11 +1805,11 @@ function PlatformPage({
                     className="flex w-full items-center justify-center gap-2 rounded-[8px] bg-white px-4 py-3 text-sm font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
                   >
                     <Play size={17} fill="currentColor" strokeWidth={2.25} />
-                    {isRouting ? 'Routing' : routeBlockReason || 'Route request'}
+                    {isRouting ? 'Routing…' : routeBlockReason || 'Route request'}
                   </button>
                   <p className="text-xs font-medium leading-relaxed text-white/38">
-                    Routing creates a quote. USDC is deducted only after wallet approval
-                    on the receipt page.
+                    Routing creates a quote. USDC is only deducted after you approve
+                    payment on the receipt page.
                   </p>
                   {error && (
                     <p className="rounded-[8px] border border-[#F4845F]/35 bg-[#F4845F]/12 px-3 py-2 text-sm font-semibold text-[#F7B49D]">
