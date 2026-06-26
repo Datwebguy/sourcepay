@@ -237,6 +237,7 @@ type PaymentReadiness = {
 type SafeConfig = {
   network: string;
   arcRpcUrl: boolean;
+  agentWallet: string | null;
   faucetUrls: {
     arc: string | null;
     usdc: string | null;
@@ -253,7 +254,7 @@ type SafeConfig = {
     rpcUrls: string[];
     blockExplorerUrls: string[];
   };
-  walletConnectProjectId?: string;
+  walletConnectProjectId: string;
 };
 
 type WalletAuthChallenge = {
@@ -352,8 +353,8 @@ const HERO_SOURCES: HeroSource[] = [
 ];
 
 const SOURCE_KINDS: SourceKind[] = ['Article', 'Social post', 'Transcript'];
-const MIN_USDC_AMOUNT = 1;
-const DEFAULT_SOURCE_PRICE = '1';
+const MIN_USDC_AMOUNT = 0.000001;
+const DEFAULT_SOURCE_PRICE = '0.000001';
 const DEFAULT_REQUEST_BUDGET = 5000;
 const MAX_REQUEST_BUDGET = 10000;
 
@@ -409,8 +410,16 @@ class AppErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState>
   }
 }
 
-function formatUsd(value: number, decimals = 4) {
-  return value.toFixed(decimals);
+function formatUsd(value: number, decimals = 6) {
+  const formatted = value.toFixed(decimals);
+  if (formatted.includes('.')) {
+    const cleaned = formatted.replace(/0+$/u, '');
+    if (cleaned.endsWith('.')) {
+      return cleaned.slice(0, -1);
+    }
+    return cleaned;
+  }
+  return formatted;
 }
 
 function maskAddress(value: string | null | undefined) {
@@ -1643,7 +1652,7 @@ function PlatformPage({
                       type="range"
                       min={MIN_USDC_AMOUNT}
                       max={MAX_REQUEST_BUDGET}
-                      step="1"
+                      step="any"
                       value={budget}
                       onChange={(event) => setBudget(Number(event.target.value))}
                       className="w-full accent-[#5FA9FF]"
@@ -1653,7 +1662,7 @@ function PlatformPage({
                       type="number"
                       min={MIN_USDC_AMOUNT}
                       max={MAX_REQUEST_BUDGET}
-                      step="1"
+                      step="any"
                       value={budget}
                       onChange={(event) =>
                         setBudget(
@@ -2135,7 +2144,7 @@ function PlatformPage({
                       type="range"
                       min={MIN_USDC_AMOUNT}
                       max={MAX_REQUEST_BUDGET}
-                      step="1"
+                      step="any"
                       value={budget}
                       onChange={(event) => setBudget(Number(event.target.value))}
                       className="w-full accent-[#5FA9FF]"
@@ -2145,7 +2154,7 @@ function PlatformPage({
                       type="number"
                       min={MIN_USDC_AMOUNT}
                       max={MAX_REQUEST_BUDGET}
-                      step="1"
+                      step="any"
                       value={budget}
                       onChange={(event) =>
                         setBudget(
@@ -2340,6 +2349,14 @@ function PlatformPage({
                           <span className="text-white/45">Wallet guard</span>
                           <span className="font-semibold">Switches before payment</span>
                         </div>
+                        {safeConfig.agentWallet && (
+                          <div className="flex justify-between gap-3 col-span-2 border-t border-white/[0.06] pt-2">
+                            <span className="text-[#5FA9FF] font-bold">🤖 Agent Wallet</span>
+                            <span className="font-mono text-xs font-semibold text-[#5FA9FF]/90 select-all break-all">
+                              {safeConfig.agentWallet}
+                            </span>
+                          </div>
+                        )}
                       </div>
                       {paymentReadiness?.gateway.error && (
                         <p className="mt-3 rounded-[8px] border border-[#F4845F]/35 bg-[#F4845F]/12 px-3 py-2 text-xs font-semibold leading-relaxed text-[#F7B49D]">
@@ -2605,7 +2622,7 @@ function CreatorPage({
     const price = Number(draft.price);
 
     if (!title || !wallet || !content || !Number.isFinite(price) || price < MIN_USDC_AMOUNT) {
-      setError('Complete every field and set a citation price of at least 1 USDC.');
+      setError(`Complete every field and set a citation price of at least ${MIN_USDC_AMOUNT} USDC.`);
       setNotice('');
       return;
     }
@@ -2684,7 +2701,7 @@ function CreatorPage({
     const price = Number(editDraft.price);
 
     if (!title || !wallet || !content || !Number.isFinite(price) || price < MIN_USDC_AMOUNT) {
-      setError('Complete every field and set a citation price of at least 1 USDC.');
+      setError(`Complete every field and set a citation price of at least ${MIN_USDC_AMOUNT} USDC.`);
       setNotice('');
       return;
     }
@@ -2967,7 +2984,7 @@ function CreatorPage({
                     inputMode="decimal"
                     type="number"
                     min={MIN_USDC_AMOUNT}
-                    step="1"
+                    step="any"
                     className="w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none placeholder:text-white/25 focus:border-[#5FA9FF]/80"
                   />
                 </label>
@@ -3193,7 +3210,7 @@ function CreatorPage({
                               inputMode="decimal"
                               type="number"
                               min={MIN_USDC_AMOUNT}
-                              step="1"
+                              step="any"
                               className="min-w-0 rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none focus:border-[#5FA9FF]/80"
                             />
                             <input
@@ -3644,6 +3661,7 @@ function ReceiptPage({
   isConnectingWallet: boolean;
 }) {
   const [receipt, setReceipt] = useState<Receipt | null>(initialReceipt);
+  const [safeConfig, setSafeConfig] = useState<SafeConfig | null>(null);
   const [loadError, setLoadError] = useState('');
   const [paymentNotice, setPaymentNotice] = useState('');
   const [receiptNotice, setReceiptNotice] = useState('');
@@ -3672,6 +3690,10 @@ function ReceiptPage({
     setVerificationNotice('');
 
     const accessToken = initialReceipt?.accessToken ?? initialAccessToken ?? null;
+
+    requestJson<{ config: SafeConfig }>('/api/config')
+      .then((payload) => setSafeConfig(payload.config))
+      .catch(() => {});
 
     requestJson<{ receipt: Receipt }>(
       apiPath(`/api/receipts/${id}`, { access: accessToken }),
@@ -3856,6 +3878,38 @@ function ReceiptPage({
       setPaymentNotice(
         response.ok
           ? 'Creators paid. This receipt is now complete.'
+          : response.payload.payment?.reason || response.payload.error || 'Payment was not completed.',
+      );
+    } catch (requestError) {
+      setPaymentNotice((requestError as Error).message);
+    } finally {
+      setIsPaying(false);
+    }
+  };
+
+  const attemptAgentPayment = async () => {
+    setIsPaying(true);
+    setPaymentNotice('');
+
+    try {
+      const response = await requestJsonWithStatus<{
+        payment?: { status: string; reason: string };
+        receipt?: Receipt;
+        error?: string;
+      }>(`/api/receipts/${id}/pay`, {
+        method: 'POST',
+        body: JSON.stringify({
+          ...receiptAccessBody(receipt),
+          payWithAgentWallet: true,
+        }),
+      });
+
+      if (response.payload.receipt) {
+        setReceipt(response.payload.receipt);
+      }
+      setPaymentNotice(
+        response.ok
+          ? 'Creators paid autonomously via Agent Wallet. This receipt is now complete.'
           : response.payload.payment?.reason || response.payload.error || 'Payment was not completed.',
       );
     } catch (requestError) {
@@ -4161,6 +4215,25 @@ function ReceiptPage({
                             ? 'Pay creators'
                             : 'Connect and pay'}
                   </button>
+                  {safeConfig?.agentWallet && !isPublicReceiptStatus(receipt.paymentStatus) && (
+                    <div className="mt-3 rounded-[8px] border border-[#5FA9FF]/20 bg-[#5FA9FF]/5 p-3 text-left">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-[#5FA9FF] flex items-center gap-1.5">
+                        <span>🤖 Autonomous Agent Billing Available</span>
+                      </p>
+                      <p className="mt-1 text-xs text-white/50">
+                        Let the AI agent pay for citations programmatically using its server-side wallet:
+                        <span className="mt-1 block font-mono text-[10px] text-white/70 break-all select-all">{safeConfig.agentWallet}</span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={attemptAgentPayment}
+                        disabled={isPaying || receipt.sources.length === 0}
+                        className="mt-3 w-full rounded-[8px] bg-[#5FA9FF] px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
+                      >
+                        {isPaying ? 'Processing Agent Payout...' : 'Pay via Agent Wallet'}
+                      </button>
+                    </div>
+                  )}
                   {connectedWallet.address && (
                     <p
                       className={`mt-3 rounded-[8px] border px-3 py-2 text-xs font-semibold leading-relaxed ${

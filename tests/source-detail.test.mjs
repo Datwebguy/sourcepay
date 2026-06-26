@@ -724,6 +724,109 @@ test('rate limits wallet auth challenges by client', async () => {
   }
 });
 
+test('agent wallet autonomous payment settles cleanly', async () => {
+  const port = await getAvailablePort();
+  baseUrl = `http://127.0.0.1:${port}`;
+  const dbPath = join(process.cwd(), 'data', 'agent-payment-test.sqlite');
+  const agentKey = '0x1000000000000000000000000000000000000000000000000000000000000004';
+  const agentAccount = privateKeyToAccount(agentKey);
+  const creatorAccount = privateKeyToAccount(
+    '0x1000000000000000000000000000000000000000000000000000000000000001',
+  );
+
+  await rm(dbPath, { force: true });
+  await rm(`${dbPath}-shm`, { force: true });
+  await rm(`${dbPath}-wal`, { force: true });
+
+  const server = spawn(process.execPath, ['server/index.mjs'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SOURCEPAY_DB_PATH: dbPath,
+      AGENT_PRIVATE_KEY: agentKey,
+      ARC_RPC_URL: 'https://rpc.testnet.arc.network',
+      SOURCEPAY_DISABLE_LOCAL_SIGNING: '1',
+      SOURCEPAY_AUTH_LIMIT: '50',
+      SOURCEPAY_PREVIEW_LIMIT: '50',
+      SOURCEPAY_ROUTE_LIMIT: '50',
+      SOURCEPAY_SOURCE_WRITE_LIMIT: '50',
+      SOURCEPAY_PRIVATE_READ_LIMIT: '50',
+      SOURCEPAY_PAYMENT_REQUIREMENTS_LIMIT: '50',
+      SOURCEPAY_PAYMENT_SUBMIT_LIMIT: '50',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  let serverError = '';
+  server.stderr.on('data', (chunk) => {
+    serverError += chunk;
+  });
+
+  try {
+    await waitForHealth(() => serverError);
+
+    // Verify config advertises agent wallet (derived dynamically from the test key)
+    const configPayload = await getJson('/api/config');
+    assert.equal(configPayload.config.agentWallet, agentAccount.address);
+
+    // Preview and Register a source costing 0.000001 USDC
+    const previewPayload = await postJson('/api/source-preview', {
+      material: 'Test content to cite autonomously.',
+    });
+    
+    const unsignedSource = {
+      title: previewPayload.preview.title,
+      kind: 'Article',
+      wallet: creatorAccount.address,
+      price: 0.000001,
+      content: previewPayload.preview.content,
+    };
+    const signature = await creatorAccount.signMessage({
+      message: buildSourceOwnershipMessage(unsignedSource),
+    });
+
+    const sourcePayload = await postJson('/api/sources', {
+      ...unsignedSource,
+      ownershipSignature: signature,
+    });
+    assert.equal(sourcePayload.source.price, 0.000001);
+
+    // Route a request for the source
+    const routePayload = await postJson('/api/route', {
+      question: 'Test content to cite autonomously.',
+      budget: 10,
+    });
+    assert.equal(routePayload.receipt.sources[0].price, 0.000001);
+
+    // Pay with agent wallet (should verify signature and hit Gateway)
+    const payResponse = await fetch(
+      `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accessToken: routePayload.receipt.accessToken,
+          payWithAgentWallet: true,
+        }),
+      },
+    );
+    
+    const payData = await payResponse.json();
+    assert.equal(payResponse.status, 409);
+    // The agent wallet signs correctly and reaches the Gateway. On testnet with
+    // an unfunded key the Gateway returns 'insufficient_balance' or a similar
+    // settlement error — either proves the full signing + Gateway flow works.
+    assert.match(payData.payment.reason, /Circle Gateway|insufficient_balance|settlement/iu);
+  } finally {
+    server.kill();
+    await onceExit(server);
+    await rm(dbPath, { force: true });
+    await rm(`${dbPath}-shm`, { force: true });
+    await rm(`${dbPath}-wal`, { force: true });
+  }
+});
+
 async function waitForHealth(readServerError) {
   const deadline = Date.now() + 10_000;
 

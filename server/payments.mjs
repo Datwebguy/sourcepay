@@ -11,6 +11,27 @@ import { x402Version } from '@x402/core';
 import { BATCH_SETTLEMENT_SCHEME } from '@x402/evm';
 import { isAddress } from 'viem';
 import { randomBytes } from 'node:crypto';
+import { privateKeyToAccount } from 'viem/accounts';
+
+let agentAccount = null;
+const agentKey = process.env.AGENT_PRIVATE_KEY || process.env.AGENT_KEY;
+if (agentKey) {
+  try {
+    const cleanKey = agentKey.startsWith('0x') ? agentKey : `0x${agentKey}`;
+    if (/^0x[0-9a-fA-F]{64}$/.test(cleanKey)) {
+      agentAccount = privateKeyToAccount(cleanKey);
+      console.log(`[Agent Wallet] Loaded autonomous payer: ${agentAccount.address}`);
+    } else {
+      console.error('[Agent Wallet] Invalid AGENT_PRIVATE_KEY format (must be 64 hex characters).');
+    }
+  } catch (err) {
+    console.error('[Agent Wallet] Failed to initialize agent account:', err);
+  }
+}
+
+export function getAgentWalletAddress() {
+  return agentAccount ? agentAccount.address : null;
+}
 
 export function isEvmAddress(value) {
   return isAddress(String(value));
@@ -192,85 +213,59 @@ export async function createPaymentExecution({ receipt, payments }) {
   );
   const facilitator = createGatewayFacilitator();
   const settlements = [];
+  const errors = [];
 
-  for (const source of receipt.sources) {
-    const submittedPayment = paymentBySource.get(source.id);
-    const paymentPayload = normalizeSubmittedPaymentPayload(submittedPayment, source);
-    if (!paymentPayload) {
-      return {
-        ok: false,
-        status: 'payment_required',
-        reason: 'A selected source still needs payment approval.',
-        readiness,
-      };
-    }
+  await Promise.all(
+    receipt.sources.map(async (source) => {
+      const submittedPayment = paymentBySource.get(source.id);
+      const paymentPayload = normalizeSubmittedPaymentPayload(submittedPayment, source);
+      if (!paymentPayload) {
+        errors.push("A selected source still needs payment approval.");
+        return;
+      }
 
-    const requirements = createSourcePaymentRequirements(source);
-    const payloadError = validatePaymentPayload(paymentPayload, requirements);
-    if (payloadError) {
-      return {
-        ok: false,
-        status: 'payment_rejected',
-        reason: payloadError,
-        readiness,
-        settlements,
-      };
-    }
+      const requirements = createSourcePaymentRequirements(source);
+      const payloadError = validatePaymentPayload(paymentPayload, requirements);
+      if (payloadError) {
+        errors.push(payloadError);
+        return;
+      }
 
-    let verification;
-    try {
-      verification = await facilitator.verify(paymentPayload, requirements);
-    } catch (error) {
-      return {
-        ok: false,
-        status: 'payment_rejected',
-        reason: gatewayErrorMessage('Circle Gateway verification failed', error),
-        readiness,
-        settlements,
-      };
-    }
+      try {
+        const verification = await facilitator.verify(paymentPayload, requirements);
+        if (!verification.isValid) {
+          errors.push(verification.invalidReason ?? 'Circle Gateway rejected the signed payment.');
+          return;
+        }
 
-    if (!verification.isValid) {
-      return {
-        ok: false,
-        status: 'payment_rejected',
-        reason: verification.invalidReason ?? 'Circle Gateway rejected the signed payment.',
-        readiness,
-        settlements,
-      };
-    }
+        const settlement = await facilitator.settle(paymentPayload, requirements);
+        if (!settlement.success) {
+          errors.push(settlement.errorReason ?? 'Circle Gateway settlement failed.');
+          return;
+        }
 
-    let settlement;
-    try {
-      settlement = await facilitator.settle(paymentPayload, requirements);
-    } catch (error) {
-      return {
-        ok: false,
-        status: 'payment_rejected',
-        reason: gatewayErrorMessage('Circle Gateway settlement failed', error),
-        readiness,
-        settlements,
-      };
-    }
+        settlements.push({
+          sourceId: source.id,
+          payTo: requirements.payTo,
+          payer: settlement.payer ?? verification.payer ?? '',
+          transactionId: settlement.transaction,
+          network: settlement.network,
+          amount: requirements.amount,
+        });
+      } catch (error) {
+        errors.push(gatewayErrorMessage('Circle Gateway execution failed', error));
+      }
+    })
+  );
 
-    if (!settlement.success) {
-      return {
-        ok: false,
-        status: 'payment_rejected',
-        reason: settlement.errorReason ?? 'Circle Gateway settlement failed.',
-        readiness,
-        settlements,
-      };
-    }
-
-    settlements.push({
-      sourceId: source.id,
-      payTo: requirements.payTo,
-      payer: settlement.payer ?? verification.payer ?? '',
-      transactionId: settlement.transaction,
-      network: settlement.network,
-      amount: requirements.amount,
-    });
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      status: 'payment_rejected',
+      reason: errors.join(' | '),
+      readiness,
+      settlements,
+    };
   }
 
   return {
@@ -281,6 +276,50 @@ export async function createPaymentExecution({ receipt, payments }) {
     settlements,
   };
 }
+
+export async function signPaymentForAgent(receipt, source, account) {
+  const requirements = createSourcePaymentRequirements(source);
+  const typedDataResult = createSigningTypedData({
+    payer: account.address,
+    requirements,
+    source,
+  });
+  
+  const { paymentPayloadTemplate, ...signableTypedData } = typedDataResult;
+  
+  const signature = await account.signTypedData({
+    domain: signableTypedData.domain,
+    types: signableTypedData.types,
+    primaryType: signableTypedData.primaryType,
+    message: signableTypedData.message,
+  });
+  
+  return {
+    sourceId: source.id,
+    paymentPayload: {
+      ...paymentPayloadTemplate,
+      payload: {
+        ...paymentPayloadTemplate.payload,
+        authorization: signableTypedData.message,
+        signature,
+      },
+    },
+  };
+}
+
+export async function generateAgentWalletPayments(receipt) {
+  if (!agentAccount) {
+    throw new Error('Autonomous Agent Wallet is not configured on this server.');
+  }
+  
+  const payments = [];
+  for (const source of receipt.sources) {
+    const payment = await signPaymentForAgent(receipt, source, agentAccount);
+    payments.push(payment);
+  }
+  return payments;
+}
+
 
 function getNetwork() {
   return process.env.SOURCEPAY_NETWORK || 'Arc Testnet';

@@ -83,6 +83,7 @@ ARC_RPC_URL=
 SOURCEPAY_ARC_FAUCET_URL=
 SOURCEPAY_USDC_FAUCET_URL=
 SOURCEPAY_WALLETCONNECT_PROJECT_ID=
+AGENT_PRIVATE_KEY=
 ```
 
 Optional rate-limit overrides:
@@ -101,6 +102,8 @@ SOURCEPAY_PROOF_VERIFY_LIMIT=30
 `ARC_RPC_URL` should point to the Arc RPC endpoint used for the event. Faucet URLs should point to the official Arc testnet and USDC claim pages for the event. If faucet URLs are not configured, SourcePay falls back to Circle's faucet.
 
 `SOURCEPAY_WALLETCONNECT_PROJECT_ID` is the Reown/WalletConnect project ID. It enables WalletConnect QR/app connections for mobile wallets such as OKX Wallet. Browser-injected wallets still work without it.
+
+`AGENT_PRIVATE_KEY` is a 32-byte hex private key (with or without `0x` prefix) for the autonomous agent's wallet. If provided, the server registers the agent's wallet address, allowing the agent to programmatically sign and pay creators using EIP-3009 TransferWithAuthorization payloads. If not provided, agent-wallet functions are disabled (returning `null` in config).
 
 ## Main User Flows
 
@@ -167,6 +170,35 @@ On a receipt page, users can:
 - Download receipt proof.
 - Verify receipt proof against stored SourcePay data.
 - Review payment status and payment history.
+
+## Autonomous Agent Payments
+
+SourcePay supports fully autonomous, server-side and CLI agent payments using an agent wallet. When the environment variable `AGENT_PRIVATE_KEY` is configured, SourcePay enables:
+
+1. **Auto-payouts via Server API**: The app exposes the agent's public address at `/api/config`. Users or scripts can request the server-hosted agent wallet to settle receipt payments directly by clicking **Pay with Agent Wallet** on the receipt UI (provided the agent wallet is funded with Testnet USDC).
+2. **CLI Autonomous Agent Runner**: A standalone script (`scripts/agent-runner.mjs`) demonstrates an autonomous AI agent flow. It:
+   - Takes a search query/objective and budget.
+   - Queries the router endpoint `/api/route` to find matching sources.
+   - Programmatically signs individual EIP-3009 transfer authorizations using its private key.
+   - Submits the signed authorizations to the SourcePay settlement endpoint for Gateway validation and execution.
+
+### Running the Autonomous CLI Agent
+
+To run the CLI agent locally:
+```bash
+# Set the agent private key (replace with a 32-byte hex key)
+$env:AGENT_PRIVATE_KEY="0x..." # Windows Powershell
+# or: export AGENT_PRIVATE_KEY="0x..." # Linux/macOS
+
+# Run the agent with an objective and max budget (in USDC)
+node scripts/agent-runner.mjs "Arc citation licensing note" 10
+```
+
+### Funding the Agent Wallet
+For the agent to pay creators on Arc Testnet, fund the agent's address with Arc Testnet USDC from the faucet:
+- Visit `https://faucet.circle.com`
+- Select **Arc Testnet** (Chain ID: `5042002`)
+- Input the Agent Wallet address shown when launching the server or running the CLI script.
 
 ## Validation
 
