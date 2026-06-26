@@ -9,7 +9,7 @@ import { BatchFacilitatorClient } from '@circle-fin/x402-batching/server';
 import { CHAIN_CONFIGS } from '@circle-fin/x402-batching/client';
 import { x402Version } from '@x402/core';
 import { BATCH_SETTLEMENT_SCHEME } from '@x402/evm';
-import { getAddress, isAddress, verifyTypedData } from 'viem';
+import { getAddress, isAddress, recoverTypedDataAddress } from 'viem';
 import { randomBytes } from 'node:crypto';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -527,23 +527,23 @@ async function validateLocalPaymentSignature(paymentPayload, requirements) {
       nonce: authorization.nonce,
     };
 
-    const valid = await verifyTypedData({
-      address: signingMessage.from,
-      domain: {
+    const domain = {
         name: CIRCLE_BATCHING_NAME,
         version: CIRCLE_BATCHING_VERSION,
         chainId,
         verifyingContract: getAddress(requirements.extra.verifyingContract),
-      },
+      };
+    const recoveredAddress = await recoverTypedDataAddress({
+      domain,
       types: TRANSFER_WITH_AUTHORIZATION_TYPES,
       primaryType: 'TransferWithAuthorization',
       message: signingMessage,
       signature,
     });
 
-    return valid
+    return sameAddress(recoveredAddress, signingMessage.from)
       ? ''
-      : 'Payment signature does not match the signed authorization. Reconnect the paying wallet and try again.';
+      : `Payment signature was produced by ${maskPaymentAddress(recoveredAddress)}, but this receipt was prepared for ${maskPaymentAddress(signingMessage.from)}. Select the paying wallet again and retry.`;
   } catch {
     return 'Payment signature could not be verified locally. Reconnect the paying wallet and try again.';
   }
@@ -551,6 +551,11 @@ async function validateLocalPaymentSignature(paymentPayload, requirements) {
 
 function sameAddress(left, right) {
   return isEvmAddress(left) && isEvmAddress(right) && String(left).toLowerCase() === String(right).toLowerCase();
+}
+
+function maskPaymentAddress(value) {
+  const address = String(value ?? '');
+  return isEvmAddress(address) ? `${address.slice(0, 6)}...${address.slice(-4)}` : 'another wallet';
 }
 
 function gatewayErrorMessage(prefix, error) {

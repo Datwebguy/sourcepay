@@ -492,6 +492,23 @@ function getEthereumProvider() {
   return activeWalletProvider ?? getInjectedProvider();
 }
 
+async function getActiveProviderAccount(provider: EthereumProvider) {
+  const existingAccounts = await provider
+    .request({
+      method: 'eth_accounts',
+    })
+    .catch(() => []);
+  const accounts =
+    Array.isArray(existingAccounts) && existingAccounts.length > 0
+      ? existingAccounts
+      : await provider.request({
+          method: 'eth_requestAccounts',
+        });
+  const account = Array.isArray(accounts) ? String(accounts[0] ?? '').trim() : '';
+
+  return account || null;
+}
+
 function clearWalletProviderEvents() {
   activeWalletProviderCleanup?.();
   activeWalletProviderCleanup = null;
@@ -4060,6 +4077,12 @@ function ReceiptPage({
         return;
       }
       await ensureArcNetwork(provider);
+      const activePayer = await getActiveProviderAccount(provider);
+      if (!activePayer) {
+        setPaymentNotice('Select the paying wallet account before settling this receipt.');
+        return;
+      }
+      payer = activePayer;
 
       const requirementsPayload = await requestJson<ReceiptPaymentRequirements>(
         apiPath(`/api/receipts/${id}/payment-requirements`, {
