@@ -1724,9 +1724,18 @@ function buildReceipt(runId, options = {}) {
 
   if (!hasAccess) return null;
 
+  const sources = statements.getRunSources.all(normalizedRun.id).map(normalizeSource);
+  const quotedSourceTotal = sources.reduce((total, source) => total + Number(source.price ?? 0), 0);
+  const repairedRun =
+    !isPaidStatus(normalizedRun.paymentStatus) &&
+    Number(normalizedRun.totalSpend ?? 0) <= 0 &&
+    quotedSourceTotal > 0
+      ? { ...normalizedRun, totalSpend: quotedSourceTotal }
+      : normalizedRun;
+
   const receipt = {
-    ...normalizedRun,
-    sources: statements.getRunSources.all(normalizedRun.id).map(normalizeSource),
+    ...repairedRun,
+    sources,
     paymentAttempts: statements.listPaymentAttempts.all(normalizedRun.id),
     paymentSettlements: statements.listPaymentSettlements.all(normalizedRun.id),
   };
@@ -2132,15 +2141,15 @@ function recordPaymentAttempt(receiptId, execution) {
 
   db.exec('BEGIN');
   try {
-  statements.insertPaymentAttempt.run(
-    attemptId,
-    receiptId,
-    execution.status,
-    execution.reason,
-    execution.readiness.rail,
-    execution.readiness.network,
-  );
-    // Calculate actual amount paid from settlements
+    statements.insertPaymentAttempt.run(
+      attemptId,
+      receiptId,
+      execution.status,
+      execution.reason,
+      execution.readiness.rail,
+      execution.readiness.network,
+    );
+
     let actualPaidAmount = 0;
     for (const settlement of execution.settlements ?? []) {
       statements.insertPaymentSettlement.run(
@@ -2160,8 +2169,13 @@ function recordPaymentAttempt(receiptId, execution) {
         actualPaidAmount += amount;
       }
     }
-    // Update both payment status AND actual total spend with settled amounts
-    statements.updateRunPaymentStatusAndSpend.run(execution.status, actualPaidAmount, receiptId);
+
+    if (execution.ok) {
+      statements.updateRunPaymentStatusAndSpend.run(execution.status, actualPaidAmount, receiptId);
+    } else {
+      statements.updateRunPaymentStatus.run(execution.status, receiptId);
+    }
+
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

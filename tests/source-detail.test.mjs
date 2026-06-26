@@ -487,20 +487,12 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(signingPayload.requirements[0].typedData.domain.chainId, 5042002);
     assert.equal(signingPayload.requirements[0].typedData.paymentPayloadTemplate.x402Version, 2);
     assert.equal(
-      signingPayload.requirements[0].typedData.paymentPayloadTemplate.resource.serviceName,
-      'SourcePay',
-    );
-    assert.equal(
-      signingPayload.requirements[0].typedData.paymentPayloadTemplate.accepted.amount,
-      '1000000',
-    );
-    assert.equal(
-      signingPayload.requirements[0].typedData.paymentPayloadTemplate.accepted.payTo,
-      creatorAccount.address,
-    );
-    assert.equal(
       signingPayload.requirements[0].typedData.paymentPayloadTemplate.payload.authorization.to,
       creatorAccount.address,
+    );
+    assert.equal(
+      signingPayload.requirements[0].typedData.paymentPayloadTemplate.payload.authorization.value,
+      '1000000',
     );
 
     const paymentResponse = await fetch(
@@ -519,6 +511,7 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(paymentPayload.payment.ok, false);
     assert.equal(paymentPayload.payment.reason, 'No creator payout was submitted.');
     assert.equal(paymentPayload.receipt.paymentStatus, 'settlement_setup');
+    assert.equal(paymentPayload.receipt.totalSpend, 1);
     assert.equal(paymentPayload.receipt.paymentAttempts.length, 1);
     assert.equal(paymentPayload.receipt.paymentAttempts[0].reason, 'No creator payout was submitted.');
     assert.deepEqual(paymentPayload.receipt.paymentSettlements, []);

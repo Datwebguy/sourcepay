@@ -391,10 +391,6 @@ function createSigningTypedData({ payer, requirements, source }) {
     message: authorization,
     paymentPayloadTemplate: {
       x402Version,
-      scheme: requirements.scheme,
-      network: requirements.network,
-      resource: createPaymentResource(source),
-      accepted: requirements,
       payload: {
         authorization,
         signature: '<signature>',
