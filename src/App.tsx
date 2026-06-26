@@ -24,7 +24,7 @@ import {
 } from 'lucide-react';
 
 type AppView = 'landing' | 'platform' | 'creator' | 'receipt' | 'source';
-type ConsoleTab = 'Requests' | 'Sources' | 'Payments' | 'Policy' | 'Wallet';
+type ConsoleTab = 'Requests' | 'Sources' | 'Payments' | 'Policy' | 'Wallet' | 'Guide';
 type Direction = 'next' | 'prev';
 type SourceKind = 'Article' | 'Social post' | 'Transcript';
 type HeroIcon = 'article' | 'social' | 'transcript' | 'receipt';
@@ -1534,6 +1534,7 @@ function PlatformPage({
                 { label: 'Payments', icon: ReceiptText },
                 { label: 'Policy', icon: ShieldCheck },
                 { label: 'Wallet', icon: Wallet },
+                { label: 'Guide', icon: FileText },
               ].map(({ label, icon: Icon }) => (
                 <button
                   key={label}
@@ -2221,6 +2222,100 @@ function PlatformPage({
                         <p className="mt-2 font-bold">{value}</p>
                       </div>
                     ))}
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {activeTab === 'Guide' && (
+              <div className="grid gap-6 md:grid-cols-2">
+                <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-5">
+                  <div className="mb-4 flex items-center gap-2 border-b border-white/10 pb-3">
+                    <div className="rounded-full bg-[#5FA9FF]/14 p-1.5 text-[#9CCCFF]">
+                      <Activity size={18} />
+                    </div>
+                    <h3 className="text-base font-bold text-white">Buyer User Guide</h3>
+                  </div>
+                  <p className="mb-4 text-xs leading-relaxed text-white/55">
+                    How to route research requests, verify citation lists, and settle receipts on the Arc Testnet.
+                  </p>
+                  <ol className="space-y-4 text-sm text-white/80">
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">1</span>
+                      <div>
+                        <p className="font-semibold text-white">Connect Wallet</p>
+                        <p className="text-xs text-white/48 mt-0.5">Click **Browser Wallet** in the top right corner to connect your Web3 account.</p>
+                      </div>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">2</span>
+                      <div>
+                        <p className="font-semibold text-white">Route citation request</p>
+                        <p className="text-xs text-white/48 mt-0.5">Go to the **Requests** tab, enter your research question and budget (USDC), and click **Route Request**.</p>
+                      </div>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">3</span>
+                      <div>
+                        <p className="font-semibold text-white">Settle Receipt</p>
+                        <p className="text-xs text-white/48 mt-0.5">Review matched sources and click **Connect and Pay** to sign EIP-3009 TransferWithAuthorization micro-payments.</p>
+                      </div>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">4</span>
+                      <div>
+                        <p className="font-semibold text-white">Recover receipts</p>
+                        <p className="text-xs text-white/48 mt-0.5">Under the **Payments** tab, connect your buyer wallet and sign the challenge to retrieve all your past invoices.</p>
+                      </div>
+                    </li>
+                  </ol>
+                  <div className="mt-5 rounded-[8px] bg-white/[0.03] p-3 text-xs leading-relaxed text-white/45 border border-white/5">
+                    <strong>Note:</strong> Set budgets to very low values (e.g. 0.0001 USDC) to test the Arc Net nanopayments zero-dust capability.
+                  </div>
+                </section>
+
+                <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-5">
+                  <div className="mb-4 flex items-center gap-2 border-b border-white/10 pb-3">
+                    <div className="rounded-full bg-[#5FBF7A]/14 p-1.5 text-[#9CFFB8]">
+                      <Database size={18} />
+                    </div>
+                    <h3 className="text-base font-bold text-white">Creator User Guide</h3>
+                  </div>
+                  <p className="mb-4 text-xs leading-relaxed text-white/55">
+                    How to register content, manage citation fees, and claim your USDC citation revenue.
+                  </p>
+                  <ol className="space-y-4 text-sm text-white/80">
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">1</span>
+                      <div>
+                        <p className="font-semibold text-white">Connect payout wallet</p>
+                        <p className="text-xs text-white/48 mt-0.5">Switch to the **Creator Portal** and connect your payout wallet to register your creator space.</p>
+                      </div>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">2</span>
+                      <div>
+                        <p className="font-semibold text-white">Register sources</p>
+                        <p className="text-xs text-white/48 mt-0.5">Input a title, optional URL, select a class, define your USDC citation fee, and click **Register Source**.</p>
+                      </div>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">3</span>
+                      <div>
+                        <p className="font-semibold text-white">Monitor earnings</p>
+                        <p className="text-xs text-white/48 mt-0.5">Click **View Earnings** under the Creator Portal, and sign the secure wallet challenge to load your revenue dashboard.</p>
+                      </div>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">4</span>
+                      <div>
+                        <p className="font-semibold text-white">Verify settlements</p>
+                        <p className="text-xs text-white/48 mt-0.5">Inspect individual citation settlements with direct transaction hash links to the Arc block explorer.</p>
+                      </div>
+                    </li>
+                  </ol>
+                  <div className="mt-5 rounded-[8px] bg-white/[0.03] p-3 text-xs leading-relaxed text-white/45 border border-white/5">
+                    <strong>Note:</strong> Registered source contents are kept private. Only the metadata and transaction counts are visible in the public directory.
                   </div>
                 </section>
               </div>
