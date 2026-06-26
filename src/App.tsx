@@ -1470,6 +1470,7 @@ function PlatformPage({
     setError('');
     try {
       await onDisconnectWallet();
+      await refreshReceipts();
       await refreshPaymentReadiness();
     } catch (requestError) {
       setError((requestError as Error).message);
@@ -2870,6 +2871,8 @@ function CreatorPage({
     try {
       const disconnectedAddress = connectedWallet.address;
       await onDisconnectWallet();
+      setEarnings(null);
+      setSources([]);
       setDraft((current) =>
         disconnectedAddress && current.wallet === disconnectedAddress
           ? { ...current, wallet: '' }
