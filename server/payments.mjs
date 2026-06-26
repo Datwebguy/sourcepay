@@ -144,6 +144,7 @@ export function getArcWalletNetwork() {
     nativeCurrency: chain.nativeCurrency,
     rpcUrls,
     blockExplorerUrls: [chain.blockExplorers.default.url],
+    usdcAddress: CHAIN_CONFIGS.arcTestnet.usdc,
   };
 }
 

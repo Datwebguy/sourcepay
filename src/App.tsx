@@ -253,6 +253,7 @@ type SafeConfig = {
     };
     rpcUrls: string[];
     blockExplorerUrls: string[];
+    usdcAddress?: string;
   };
   walletConnectProjectId: string;
 };
