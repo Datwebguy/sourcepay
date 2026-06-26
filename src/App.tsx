@@ -1184,6 +1184,9 @@ function PlatformPage({
   const [question, setQuestion] = useState('');
   const [budget, setBudget] = useState(DEFAULT_REQUEST_BUDGET);
   const [enabledTypes, setEnabledTypes] = useState<SourceKind[]>(SOURCE_KINDS);
+  const [maxSpendLimit, setMaxSpendLimit] = useState(5000);
+  const [isSavingPolicy, setIsSavingPolicy] = useState(false);
+  const [policySavedMessage, setPolicySavedMessage] = useState('');
   const [sources, setSources] = useState<RegistrySource[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [paymentReadiness, setPaymentReadiness] = useState<PaymentReadiness | null>(
@@ -1216,13 +1219,11 @@ function PlatformPage({
   const totalSpend = activeReceipt?.totalSpend ?? 0;
   const walletBalanceCopy = walletBalanceCheck.checking
     ? 'Checking balance'
-    : walletBalanceCheck.enough === true
-      ? 'Enough USDC'
-      : walletBalanceCheck.enough === false
-        ? 'Low wallet USDC'
-        : connectedWallet.address
-          ? 'Check unavailable'
-          : 'Connect wallet';
+    : walletBalanceCheck.balance !== null
+      ? `${formatUsdcAtomic(walletBalanceCheck.balance)} USDC`
+      : connectedWallet.address
+        ? 'Check unavailable'
+        : 'Connect wallet';
   const normalizedSourceSearch = sourceSearch.trim().toLowerCase();
   const discoveredSources = sources.filter((source) => {
     const matchesClass =
@@ -1254,7 +1255,7 @@ function PlatformPage({
       ? BigInt(Math.round(activeReceipt.totalSpend * 1_000_000))
       : null;
 
-    if (!activeReceipt || !connectedWallet.address || activeReceipt.sources.length === 0) {
+    if (!connectedWallet.address) {
       setWalletBalanceCheck({
         checking: false,
         balance: null,
@@ -1288,21 +1289,37 @@ function PlatformPage({
       error: '',
     }));
 
+    const usdcAddr = safeConfig?.walletNetwork?.usdcAddress || '0x3600000000000000000000000000000000000000';
+
     ensureArcNetwork(provider)
-      .then(() =>
-        readUsdcBalance({
-          provider,
-          receipt: activeReceipt,
-          wallet: connectedWallet.address as string,
-        }),
-      )
+      .then(async () => {
+        const balanceHex = String(
+          await provider.request({
+            method: 'eth_call',
+            params: [
+              {
+                to: usdcAddr,
+                data: encodeBalanceOf(connectedWallet.address as string),
+              },
+              'latest',
+            ],
+          }),
+        );
+        const balance = BigInt(balanceHex);
+        return { balance };
+      })
       .then((result) => {
         if (ignore) return;
+        const required = activeReceipt
+          ? BigInt(Math.round(activeReceipt.totalSpend * 1_000_000))
+          : null;
+        const enough = required !== null ? result.balance >= required : null;
+
         setWalletBalanceCheck({
           checking: false,
           balance: result.balance,
-          required: result.required,
-          enough: result.enough,
+          required,
+          enough,
           error: '',
         });
       })
@@ -1320,7 +1337,7 @@ function PlatformPage({
     return () => {
       ignore = true;
     };
-  }, [activeReceipt?.id, activeReceipt?.totalSpend, connectedWallet.address]);
+  }, [activeReceipt?.id, activeReceipt?.totalSpend, connectedWallet.address, safeConfig]);
 
   useEffect(() => {
     let ignore = false;
@@ -1411,6 +1428,59 @@ function PlatformPage({
       setError((requestError as Error).message);
     }
   };
+
+  const loadUserPolicy = async (walletAddress: string) => {
+    try {
+      const res = await requestJson<{
+        policy: {
+          maxSpendLimit: number;
+          perAnswerAmount: number;
+          enabledKinds: SourceKind[];
+        };
+      }>(`/api/policy?wallet=${walletAddress}`);
+      if (res.policy) {
+        setMaxSpendLimit(res.policy.maxSpendLimit);
+        setBudget(res.policy.perAnswerAmount);
+        setEnabledTypes(res.policy.enabledKinds);
+      }
+    } catch (e) {
+      console.error('Failed to load user policy:', e);
+    }
+  };
+
+  const savePolicy = async (newMax: number, newPerAnswer: number, kinds: SourceKind[]) => {
+    if (!connectedWallet.address) return;
+    setIsSavingPolicy(true);
+    setError('');
+    setPolicySavedMessage('');
+    try {
+      await requestJson('/api/policy', {
+        method: 'POST',
+        body: JSON.stringify({
+          wallet: connectedWallet.address,
+          maxSpendLimit: newMax,
+          perAnswerAmount: newPerAnswer,
+          enabledKinds: kinds,
+        }),
+      });
+      setPolicySavedMessage('Policy configuration saved successfully!');
+      setTimeout(() => setPolicySavedMessage(''), 4000);
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setIsSavingPolicy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (connectedWallet.address) {
+      loadUserPolicy(connectedWallet.address);
+    } else {
+      setMaxSpendLimit(5000);
+      setBudget(100);
+      setEnabledTypes(SOURCE_KINDS);
+    }
+  }, [connectedWallet.address]);
 
   useEffect(() => {
     refreshReceipts().catch((requestError: Error) => {
@@ -1578,8 +1648,8 @@ function PlatformPage({
             <div className="mb-4 grid gap-2 md:grid-cols-3">
               {[
                 ['1', 'Add sources', hasRegisteredSources],
-                ['2', 'Route request', selectedSources.length > 0],
-                ['3', 'Pay receipt', activeReceipt?.paymentStatus === 'paid'],
+                ['2', 'Configure Policy', Boolean(connectedWallet.address)],
+                ['3', 'Route request', selectedSources.length > 0],
               ].map(([step, label, done]) => (
                 <div
                   key={label as string}
@@ -2130,20 +2200,56 @@ function PlatformPage({
             )}
 
             {activeTab === 'Policy' && (
-              <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
-                <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4">
-                  <p className="mb-2 text-sm font-bold">Spend policy</p>
-                  <p className="max-w-sm text-sm leading-relaxed text-white/55">
-                    Control how much an agent can spend and which creator source
-                    classes are eligible for purchase.
-                  </p>
-                  <div className="mt-5 rounded-[8px] border border-white/10 bg-black/24 p-3">
-                    <div className="mb-3 flex items-center justify-between text-sm">
-                      <span className="font-bold">${formatUsd(budget, 2)} USDC</span>
-                      <span className="text-white/42">max spend</span>
+              <div className="grid gap-4 xl:grid-cols-[450px_minmax(0,1fr)]">
+                <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4 space-y-4">
+                  <div>
+                    <p className="mb-1 text-sm font-bold text-white">Spend policy</p>
+                    <p className="text-xs leading-relaxed text-white/55">
+                      Configure your global spending limit and routing parameters.
+                    </p>
+                  </div>
+
+                  {/* Max Spend Limit */}
+                  <div className="rounded-[8px] border border-white/10 bg-black/24 p-3">
+                    <div className="mb-2 flex items-center justify-between text-sm">
+                      <span className="font-bold text-white">${formatUsd(maxSpendLimit, 2)} USDC</span>
+                      <span className="text-white/42 text-xs">max spend limit</span>
                     </div>
                     <input
-                      aria-label="Policy max spend"
+                      aria-label="Policy max spend limit"
+                      type="range"
+                      min={1}
+                      max={100000}
+                      value={maxSpendLimit}
+                      onChange={(event) => setMaxSpendLimit(Number(event.target.value))}
+                      className="w-full accent-[#5FA9FF]"
+                    />
+                    <input
+                      aria-label="Policy max spend limit amount"
+                      type="number"
+                      min={1}
+                      max={100000}
+                      value={maxSpendLimit}
+                      onChange={(event) =>
+                        setMaxSpendLimit(
+                          Math.min(
+                            100000,
+                            Math.max(1, Number(event.target.value) || 1),
+                          ),
+                        )
+                      }
+                      className="mt-2 w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2 text-xs font-semibold text-white outline-none focus:border-[#5FA9FF]/80"
+                    />
+                  </div>
+
+                  {/* Per Answer Amount */}
+                  <div className="rounded-[8px] border border-white/10 bg-black/24 p-3">
+                    <div className="mb-2 flex items-center justify-between text-sm">
+                      <span className="font-bold text-white">${formatUsd(budget, 2)} USDC</span>
+                      <span className="text-white/42 text-xs">per answer amount</span>
+                    </div>
+                    <input
+                      aria-label="Policy per answer"
                       type="range"
                       min={MIN_USDC_AMOUNT}
                       max={MAX_REQUEST_BUDGET}
@@ -2153,7 +2259,7 @@ function PlatformPage({
                       className="w-full accent-[#5FA9FF]"
                     />
                     <input
-                      aria-label="Policy max spend amount"
+                      aria-label="Policy per answer amount"
                       type="number"
                       min={MIN_USDC_AMOUNT}
                       max={MAX_REQUEST_BUDGET}
@@ -2167,11 +2273,13 @@ function PlatformPage({
                           ),
                         )
                       }
-                      className="mt-3 w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-semibold text-white outline-none focus:border-[#5FA9FF]/80"
+                      className="mt-2 w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2 text-xs font-semibold text-white outline-none focus:border-[#5FA9FF]/80"
                     />
                   </div>
-                  <div className="mt-4">
-                    <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
+
+                  {/* Eligible Classes */}
+                  <div>
+                    <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.16em] text-white/42">
                       Eligible classes
                     </p>
                     <div className="grid grid-cols-3 gap-2">
@@ -2195,6 +2303,20 @@ function PlatformPage({
                       })}
                     </div>
                   </div>
+
+                  {/* Save Configuration Button */}
+                  <button
+                    type="button"
+                    onClick={() => savePolicy(maxSpendLimit, budget, enabledTypes)}
+                    disabled={!connectedWallet.address || isSavingPolicy}
+                    className="w-full rounded-[8px] bg-white text-black font-extrabold uppercase tracking-[0.12em] py-2.5 text-xs hover:bg-[#5FA9FF] transition disabled:opacity-35 disabled:cursor-not-allowed"
+                  >
+                    {isSavingPolicy ? 'Saving policy...' : connectedWallet.address ? 'Save Policy Configuration' : 'Connect wallet to save policy'}
+                  </button>
+
+                  {policySavedMessage && (
+                    <p className="text-xs text-[#8CE0A0] text-center font-semibold mt-2">{policySavedMessage}</p>
+                  )}
                 </section>
 
                 <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4">
@@ -2206,11 +2328,11 @@ function PlatformPage({
                   </p>
                   <div className="mt-5 grid gap-3 sm:grid-cols-3">
                     {[
-                      ['Payment', 'USDC'],
-                      ['Network', paymentReadiness?.network ?? 'Arc Testnet'],
+                      ['Payment token', 'USDC'],
+                      ['Network rail', paymentReadiness?.network ?? 'Arc Testnet'],
                       [
-                        'Payment status',
-                        activeReceipt ? formatStatus(activeReceipt.paymentStatus) : 'Quoted',
+                        'Active limit',
+                        `${formatUsd(budget)} USDC / answer`,
                       ],
                     ].map(([label, value]) => (
                       <div

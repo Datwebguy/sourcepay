@@ -155,6 +155,14 @@ db.exec(`
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
   );
 
+  CREATE TABLE IF NOT EXISTS user_policies (
+    wallet TEXT PRIMARY KEY,
+    max_spend_limit REAL NOT NULL DEFAULT 5000.0,
+    per_answer_amount REAL NOT NULL DEFAULT 100.0,
+    enabled_kinds TEXT NOT NULL DEFAULT '["Article","Social post","Transcript"]',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   INSERT OR IGNORE INTO wallet_config (id, network)
   VALUES (1, 'Arc Testnet');
 `);
@@ -451,6 +459,29 @@ const statements = {
     UPDATE research_runs
     SET payment_status = ?, total_spend = ?
     WHERE id = ?
+  `),
+  getUserPolicy: db.prepare(`
+    SELECT
+      wallet,
+      max_spend_limit AS maxSpendLimit,
+      per_answer_amount AS perAnswerAmount,
+      enabled_kinds AS enabledKinds
+    FROM user_policies
+    WHERE wallet = ?
+  `),
+  upsertUserPolicy: db.prepare(`
+    INSERT INTO user_policies (wallet, max_spend_limit, per_answer_amount, enabled_kinds, updated_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(wallet) DO UPDATE SET
+      max_spend_limit = excluded.max_spend_limit,
+      per_answer_amount = excluded.per_answer_amount,
+      enabled_kinds = excluded.enabled_kinds,
+      updated_at = datetime('now')
+  `),
+  getBuyerCumulativeSpend: db.prepare(`
+    SELECT COALESCE(SUM(total_spend), 0) AS total_spend
+    FROM research_runs
+    WHERE buyer_wallet = ?
   `),
   insertAuthChallenge: db.prepare(`
     INSERT INTO auth_challenges (
@@ -1975,6 +2006,30 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
     return { error: 'Buyer wallet must be a valid EVM address.' };
   }
 
+  let activeBudget = normalizedBudget;
+  let activeKinds = normalizedKinds;
+  let policy = null;
+
+  if (normalizedBuyerWallet && isEvmAddress(normalizedBuyerWallet)) {
+    const policyRow = statements.getUserPolicy.get(normalizedBuyerWallet);
+    if (policyRow) {
+      try {
+        policy = {
+          maxSpendLimit: Number(policyRow.maxSpendLimit),
+          perAnswerAmount: Number(policyRow.perAnswerAmount),
+          enabledKinds: JSON.parse(policyRow.enabledKinds),
+        };
+        activeBudget = policy.perAnswerAmount;
+        activeKinds = policy.enabledKinds.filter((k) => sourceKinds.has(k));
+        if (activeKinds.length === 0) {
+          return { error: 'Your policy disables all eligible source classes. Please enable at least one in the Policy tab.' };
+        }
+      } catch (err) {
+        logError('route.policy_parse_failed', err, { wallet: normalizedBuyerWallet });
+      }
+    }
+  }
+
   let totalSpend = 0;
   const selected = [];
   const questionTokens = tokenize(normalizedQuestion);
@@ -1988,7 +2043,7 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
   const questionPhrases = buildSearchPhrases(uniqueQuestionTokens);
 
   const eligible = statements.eligibleSources
-    .all(JSON.stringify(normalizedKinds))
+    .all(JSON.stringify(activeKinds))
     .map((source) => ({
       ...source,
       relevance: scoreSource(source, uniqueQuestionTokens, questionPhrases),
@@ -2000,9 +2055,19 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
     });
 
   for (const source of eligible) {
-    if (totalSpend + source.price > normalizedBudget) continue;
+    if (totalSpend + source.price > activeBudget) continue;
     totalSpend += source.price;
     selected.push(source);
+  }
+
+  if (policy && normalizedBuyerWallet && selected.length > 0) {
+    const cumulativeSpendRow = statements.getBuyerCumulativeSpend.get(normalizedBuyerWallet);
+    const cumulativeSpend = cumulativeSpendRow ? Number(cumulativeSpendRow.total_spend) : 0;
+    if (cumulativeSpend + totalSpend > policy.maxSpendLimit) {
+      return {
+        error: `This request would exceed your policy max spend limit of ${policy.maxSpendLimit} USDC. Your cumulative spend so far is ${cumulativeSpend} USDC, and this query would cost ${totalSpend} USDC. Please adjust your limit in the Policy tab.`,
+      };
+    }
   }
 
   if (selected.length === 0) {
@@ -2204,6 +2269,77 @@ async function handleRequest(request, response) {
           walletConnectProjectId: process.env.SOURCEPAY_WALLETCONNECT_PROJECT_ID || '',
         },
       });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/policy') {
+      const wallet = String(url.searchParams.get('wallet') ?? '').trim();
+      if (!wallet) {
+        sendJson(response, 200, {
+          policy: {
+            maxSpendLimit: 5000.0,
+            perAnswerAmount: 100.0,
+            enabledKinds: ['Article', 'Social post', 'Transcript'],
+          },
+        });
+        return;
+      }
+      let row = statements.getUserPolicy.get(wallet);
+      if (!row) {
+        row = {
+          wallet,
+          maxSpendLimit: 5000.0,
+          perAnswerAmount: 100.0,
+          enabledKinds: '["Article","Social post","Transcript"]',
+        };
+      }
+      let enabledKinds;
+      try {
+        enabledKinds = JSON.parse(row.enabledKinds);
+      } catch {
+        enabledKinds = ['Article', 'Social post', 'Transcript'];
+      }
+      sendJson(response, 200, {
+        policy: {
+          wallet: row.wallet,
+          maxSpendLimit: row.maxSpendLimit,
+          perAnswerAmount: row.perAnswerAmount,
+          enabledKinds,
+        },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/policy') {
+      const body = await readBody(request);
+      const wallet = String(body.wallet ?? '').trim();
+      if (!wallet || !isEvmAddress(wallet)) {
+        sendJson(response, 400, { error: 'Valid wallet address is required to save policy.' });
+        return;
+      }
+      const maxSpendLimit = Number(body.maxSpendLimit);
+      const perAnswerAmount = Number(body.perAnswerAmount);
+      const enabledKinds = Array.isArray(body.enabledKinds)
+        ? body.enabledKinds.filter((k) => sourceKinds.has(k))
+        : ['Article', 'Social post', 'Transcript'];
+
+      if (!Number.isFinite(maxSpendLimit) || maxSpendLimit <= 0) {
+        sendJson(response, 400, { error: 'Max spend limit must be a positive number.' });
+        return;
+      }
+      if (!Number.isFinite(perAnswerAmount) || perAnswerAmount <= 0) {
+        sendJson(response, 400, { error: 'Per answer amount must be a positive number.' });
+        return;
+      }
+
+      statements.upsertUserPolicy.run(
+        wallet,
+        maxSpendLimit,
+        perAnswerAmount,
+        JSON.stringify(enabledKinds),
+      );
+
+      sendJson(response, 200, { ok: true });
       return;
     }
 
