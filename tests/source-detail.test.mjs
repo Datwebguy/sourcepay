@@ -972,3 +972,140 @@ function getAvailablePort() {
     });
   });
 }
+
+test('hybrid ownership and trust layer verification', async () => {
+  const port = await getAvailablePort();
+  const testBaseUrl = `http://127.0.0.1:${port}`;
+  const dbPath = join(process.cwd(), 'data', 'trust-layer-test.sqlite');
+  const creatorAccount = privateKeyToAccount(
+    '0x1000000000000000000000000000000000000000000000000000000000000001',
+  );
+  await rm(dbPath, { force: true });
+  await rm(`${dbPath}-shm`, { force: true });
+  await rm(`${dbPath}-wal`, { force: true });
+
+  const server = spawn(process.execPath, ['server/index.mjs'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      PORT: String(port),
+      SOURCEPAY_DB_PATH: dbPath,
+      ARC_RPC_URL: 'https://rpc.testnet.arc.network',
+      SOURCEPAY_DISABLE_LOCAL_SIGNING: '1',
+      SOURCEPAY_AUTH_LIMIT: '50',
+      SOURCEPAY_SOURCE_WRITE_LIMIT: '50',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let serverError = '';
+  server.stderr.on('data', (chunk) => {
+    serverError += chunk;
+  });
+
+  try {
+    const localGetJson = async (path) => {
+      const response = await fetch(`${testBaseUrl}${path}`);
+      if (!response.ok) {
+        throw new Error(`GET ${path} failed: ${response.status} ${await response.text()}`);
+      }
+      return response.json();
+    };
+
+    const localPostJson = async (path, body) => {
+      const response = await fetch(`${testBaseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        throw new Error(`POST ${path} failed: ${response.status} ${await response.text()}`);
+      }
+      return response.json();
+    };
+
+    const localWaitForHealth = async () => {
+      const start = Date.now();
+      while (Date.now() - start < 10000) {
+        try {
+          const response = await fetch(`${testBaseUrl}/health`);
+          if (response.status === 200) return;
+        } catch {
+          // ignore
+        }
+        await delay(100);
+      }
+      throw new Error(`Health check timed out. stderr: ${serverError}`);
+    };
+
+    await localWaitForHealth();
+
+    // 1. Request wallet auth challenge for linking social
+    const challengePayload = await localPostJson('/api/auth/challenge', {
+      wallet: creatorAccount.address,
+      purpose: 'link-social',
+    });
+    assert.ok(challengePayload.challenge.id);
+    assert.match(challengePayload.challenge.message, /Purpose: link-social/u);
+
+    // 2. Sign challenge message
+    const signature = await creatorAccount.signMessage({
+      message: challengePayload.challenge.message,
+    });
+
+    // 3. Link X/Twitter social channel
+    const linkPayload = await localPostJson('/api/socials/link', {
+      wallet: creatorAccount.address,
+      ownerWallet: creatorAccount.address,
+      challengeId: challengePayload.challenge.id,
+      authSignature: signature,
+      platform: 'twitter',
+      handle: 'alice_writes',
+    });
+    assert.equal(linkPayload.success, true);
+    assert.equal(linkPayload.handle, 'alice_writes');
+
+    // 4. Retrieve linked socials
+    const getSocialsPayload = await localGetJson(`/api/socials?wallet=${creatorAccount.address}`);
+    assert.equal(getSocialsPayload.socials.length, 1);
+    assert.equal(getSocialsPayload.socials[0].platform, 'twitter');
+    assert.equal(getSocialsPayload.socials[0].handle, 'alice_writes');
+
+    // 5. Register content and verify it inherits social verification & triggers contract registry
+    const title = 'Verified Post';
+    const kind = 'Social post';
+    const content = 'Test trust layer content';
+    const price = 0.5;
+
+    const sourcePayload = {
+      title,
+      kind,
+      wallet: creatorAccount.address,
+      price,
+      content,
+    };
+    const ownershipMessage = buildSourceOwnershipMessage(sourcePayload);
+    const ownershipSignature = await creatorAccount.signMessage({
+      message: ownershipMessage,
+    });
+
+    const regPayload = await localPostJson('/api/sources', {
+      ...sourcePayload,
+      ownerWallet: creatorAccount.address,
+      ownershipSignature,
+      ownershipMessage,
+    });
+
+    assert.ok(regPayload.source.id);
+    assert.equal(regPayload.source.registryStatus, 'registered');
+    assert.ok(regPayload.source.registryTxHash);
+    assert.equal(regPayload.source.twitterHandle, 'alice_writes');
+
+  } finally {
+    server.kill();
+    await onceExit(server);
+    await rm(dbPath, { force: true });
+    await rm(`${dbPath}-shm`, { force: true });
+    await rm(`${dbPath}-wal`, { force: true });
+  }
+});
+

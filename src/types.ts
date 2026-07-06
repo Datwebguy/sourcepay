@@ -29,6 +29,10 @@ export type RegistrySource = {
   fingerprint?: string;
   ownerWallet?: string | null;
   ownershipVerified?: boolean;
+  registryTxHash?: string | null;
+  registryStatus?: string | null;
+  twitterHandle?: string | null;
+  mediumHandle?: string | null;
   status: 'registered' | 'archived';
   createdAt?: string;
   rank?: number;
@@ -215,6 +219,7 @@ export type SafeConfig = {
   network: string;
   arcRpcUrl: boolean;
   agentWallet: string | null;
+  contentRegistryAddress: string | null;
   faucetUrls: {
     arc: string | null;
     usdc: string | null;

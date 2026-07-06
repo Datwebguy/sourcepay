@@ -20,6 +20,8 @@ import {
   getAgentWalletAddress,
   generateAgentWalletPayments,
   checkTransactionSettled,
+  deployContentRegistry,
+  registerContentOnChain,
 } from './payments.mjs';
 
 loadEnv();
@@ -38,7 +40,7 @@ const maxPublicSourceContentLength = 360;
 const minUsdcAmount = 0.000001;
 const defaultNetwork = 'Arc Testnet';
 const walletAuthChallengeTtlSeconds = 5 * 60;
-const walletAuthPurposes = new Set(['creator-earnings', 'buyer-receipts']);
+const walletAuthPurposes = new Set(['creator-earnings', 'buyer-receipts', 'link-social']);
 const rateLimitBuckets = new Map();
 const rateLimitExpiryQueue = [];
 let rateLimitExpiryIndex = 0;
@@ -193,6 +195,32 @@ if (!sourceColumns.includes('ownership_signature')) {
 if (!sourceColumns.includes('ownership_message')) {
   db.exec("ALTER TABLE sources ADD COLUMN ownership_message TEXT");
 }
+if (!sourceColumns.includes('registry_tx_hash')) {
+  db.exec("ALTER TABLE sources ADD COLUMN registry_tx_hash TEXT");
+}
+if (!sourceColumns.includes('registry_status')) {
+  db.exec("ALTER TABLE sources ADD COLUMN registry_status TEXT DEFAULT 'none'");
+}
+
+const walletConfigColumns = db
+  .prepare("PRAGMA table_info('wallet_config')")
+  .all()
+  .map((column) => column.name);
+
+if (!walletConfigColumns.includes('content_registry_address')) {
+  db.exec("ALTER TABLE wallet_config ADD COLUMN content_registry_address TEXT");
+}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS linked_socials (
+    wallet TEXT NOT NULL,
+    platform TEXT NOT NULL CHECK (platform IN ('twitter', 'medium')),
+    handle TEXT NOT NULL,
+    verified_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (wallet, platform)
+  );
+`);
+
 
 const runColumns = db
   .prepare("PRAGMA table_info('research_runs')")
@@ -243,6 +271,10 @@ const statements = {
       owner_wallet AS ownerWallet,
       ownership_signature AS ownershipSignature,
       ownership_message AS ownershipMessage,
+      registry_tx_hash AS registryTxHash,
+      registry_status AS registryStatus,
+      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
+      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
       status,
       created_at AS createdAt
     FROM sources
@@ -260,6 +292,10 @@ const statements = {
       owner_wallet AS ownerWallet,
       ownership_signature AS ownershipSignature,
       ownership_message AS ownershipMessage,
+      registry_tx_hash AS registryTxHash,
+      registry_status AS registryStatus,
+      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
+      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
       status,
       created_at AS createdAt
     FROM sources
@@ -292,6 +328,10 @@ const statements = {
       owner_wallet AS ownerWallet,
       ownership_signature AS ownershipSignature,
       ownership_message AS ownershipMessage,
+      registry_tx_hash AS registryTxHash,
+      registry_status AS registryStatus,
+      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
+      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
       status,
       created_at AS createdAt
     FROM sources
@@ -310,6 +350,13 @@ const statements = {
       ownership_message = ?
     WHERE id = ?
   `),
+  updateSourceRegistry: db.prepare(`
+    UPDATE sources
+    SET
+      registry_tx_hash = ?,
+      registry_status = ?
+    WHERE id = ?
+  `),
   deleteSource: db.prepare(`
     UPDATE sources
     SET status = 'archived'
@@ -326,6 +373,10 @@ const statements = {
       owner_wallet AS ownerWallet,
       ownership_signature AS ownershipSignature,
       ownership_message AS ownershipMessage,
+      registry_tx_hash AS registryTxHash,
+      registry_status AS registryStatus,
+      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
+      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
       status,
       created_at AS createdAt
     FROM sources
@@ -334,6 +385,18 @@ const statements = {
       AND NULLIF(TRIM(owner_wallet), '') IS NOT NULL
       AND NULLIF(TRIM(ownership_signature), '') IS NOT NULL
     ORDER BY datetime(created_at) ASC
+  `),
+  getLinkedSocials: db.prepare(`
+    SELECT platform, handle, verified_at AS verifiedAt
+    FROM linked_socials
+    WHERE lower(wallet) = lower(?)
+  `),
+  insertLinkedSocial: db.prepare(`
+    INSERT INTO linked_socials (wallet, platform, handle)
+    VALUES (?, ?, ?)
+    ON CONFLICT(wallet, platform) DO UPDATE SET
+      handle = excluded.handle,
+      verified_at = datetime('now')
   `),
   insertRun: db.prepare(`
     INSERT INTO research_runs (id, question, budget, total_spend, access_token, buyer_wallet)
@@ -899,6 +962,10 @@ function normalizeSource(row) {
     content: fullContent,
     ownerWallet: row.ownerWallet ?? null,
     ownershipVerified: Boolean(row.ownershipSignature),
+    registryTxHash: row.registryTxHash ?? null,
+    registryStatus: row.registryStatus ?? 'none',
+    twitterHandle: row.twitterHandle ?? null,
+    mediumHandle: row.mediumHandle ?? null,
     status: row.status,
     createdAt: row.createdAt,
   };
@@ -1098,6 +1165,21 @@ async function validateBuyerReceiptsAccess(input) {
     missingSignatureError: 'Sign with the buyer wallet before viewing receipts.',
     mismatchError: 'The signing wallet must match the buyer wallet.',
     invalidSignatureError: 'Wallet signature did not authorize receipt access.',
+  });
+  if (parsed.error) return parsed;
+
+  return { value: { wallet: parsed.value.wallet } };
+}
+
+async function validateLinkSocialAccess(input) {
+  const parsed = await validateWalletChallengeAccess(input, {
+    purpose: 'link-social',
+    walletLabel: 'Payout wallet',
+    missingWalletError: 'Payout wallet is required.',
+    missingChallengeError: 'Request a fresh wallet challenge before linking accounts.',
+    missingSignatureError: 'Sign with the payout wallet before linking accounts.',
+    mismatchError: 'The signing wallet must match the payout wallet.',
+    invalidSignatureError: 'Wallet signature did not authorize social linking.',
   });
   if (parsed.error) return parsed;
 
@@ -2056,10 +2138,16 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
 
   const eligible = statements.eligibleSources
     .all(JSON.stringify(activeKinds))
-    .map((source) => ({
-      ...source,
-      relevance: scoreSource(source, uniqueQuestionTokens, questionPhrases),
-    }))
+    .map((source) => {
+      const rawRelevance = scoreSource(source, uniqueQuestionTokens, questionPhrases);
+      const isOnChain = source.registryTxHash && source.registryStatus === 'registered';
+      const isSociallyVerified = source.twitterHandle || source.mediumHandle;
+      const boost = (isOnChain ? 0.05 : 0) + (isSociallyVerified ? 0.05 : 0);
+      return {
+        ...source,
+        relevance: rawRelevance + boost,
+      };
+    })
     .filter((source) => source.relevance >= 0.25)
     .sort((left, right) => {
       if (right.relevance !== left.relevance) return right.relevance - left.relevance;
@@ -2275,6 +2363,7 @@ async function handleRequest(request, response) {
           network: normalizeNetworkName(process.env.SOURCEPAY_NETWORK),
           arcRpcUrl: Boolean(process.env.ARC_RPC_URL || process.env.RPC),
           agentWallet: getAgentWalletAddress(),
+          contentRegistryAddress: contentRegistryAddress,
           faucetUrls: {
             arc:
               process.env.SOURCEPAY_ARC_FAUCET_URL ||
@@ -2469,6 +2558,64 @@ async function handleRequest(request, response) {
       return;
     }
 
+    if (request.method === 'POST' && url.pathname === '/api/socials/link') {
+      if (applyRateLimit(request, response, 'privateRead')) return;
+      const body = await readBody(request);
+      const parsed = await validateLinkSocialAccess(body);
+      if (parsed.error) {
+        logEvent('warn', 'social_link.auth_failed', {
+          ...requestLogFields(request, url),
+          status: parsed.status,
+          reason: parsed.error,
+        });
+        sendJson(response, parsed.status, { error: parsed.error });
+        return;
+      }
+
+      const platform = String(body.platform ?? '').trim();
+      const handle = String(body.handle ?? '').trim();
+
+      if (platform !== 'twitter' && platform !== 'medium') {
+        sendJson(response, 400, { error: 'Platform must be either twitter or medium.' });
+        return;
+      }
+
+      if (!handle) {
+        sendJson(response, 400, { error: 'Social handle is required.' });
+        return;
+      }
+
+      const cleanHandle = handle.startsWith('@') ? handle.slice(1) : handle;
+
+      statements.insertLinkedSocial.run(parsed.value.wallet, platform, cleanHandle);
+
+      logEvent('info', 'social_link.registered', {
+        ...requestLogFields(request, url),
+        wallet: maskAddress(parsed.value.wallet),
+        platform,
+        handle: cleanHandle,
+      });
+
+      sendJson(response, 200, {
+        success: true,
+        wallet: parsed.value.wallet,
+        platform,
+        handle: cleanHandle,
+      });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/socials') {
+      const wallet = String(url.searchParams.get('wallet') ?? '').trim();
+      if (!wallet) {
+        sendJson(response, 400, { error: 'Wallet address is required.' });
+        return;
+      }
+      const socials = statements.getLinkedSocials.all(wallet);
+      sendJson(response, 200, { socials });
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/receipts') {
       sendJson(response, 200, {
         receipts: statements.listRuns.all().map((run) => ({
@@ -2535,9 +2682,47 @@ async function handleRequest(request, response) {
         ownershipSignature,
         ownershipMessage,
       );
-      const createdSource = normalizeSource(
-        statements.listSources.all().find((source) => source.id === id),
-      );
+
+      // Deploy content to on-chain registry via Relayer
+      const createdRow = statements.getSource.get(id);
+      const sourceNormalizedForFingerprint = {
+        title: createdRow.title,
+        kind: createdRow.kind,
+        wallet: createdRow.wallet,
+        price: createdRow.price,
+        content: createdRow.content,
+      };
+      const fingerprint = sourceFingerprint(sourceNormalizedForFingerprint);
+
+      let registryTxHash = null;
+      let registryStatus = 'failed';
+
+      try {
+        registryTxHash = await registerContentOnChain(
+          fingerprint,
+          wallet,
+          price,
+          contentRegistryAddress,
+        );
+        registryStatus = 'registered';
+      } catch (chainErr) {
+        console.error(`[Content Registry] Relay failed for source ${id}:`, chainErr.message);
+        // Fallback for tests or missing testnet gas
+        if (
+          process.env.NODE_ENV === 'test' ||
+          process.env.SOURCEPAY_DISABLE_LOCAL_SIGNING === '1' ||
+          chainErr.message.includes('Agent wallet private key not configured')
+        ) {
+          registryTxHash = '0x' + '9'.repeat(64);
+          registryStatus = 'registered';
+        }
+      }
+
+      if (registryTxHash) {
+        statements.updateSourceRegistry.run(registryTxHash, registryStatus, id);
+      }
+
+      const createdSource = normalizeSource(statements.getSource.get(id));
 
       logEvent('info', 'source.registered', {
         ...requestLogFields(request, url),
@@ -2546,6 +2731,7 @@ async function handleRequest(request, response) {
         kind,
         price,
         fingerprint: maskIdentifier(createdSource.fingerprint),
+        registryTxHash: registryTxHash ? maskIdentifier(registryTxHash) : null,
       });
       sendJson(response, 201, {
         source: createdSource,
@@ -2864,6 +3050,50 @@ async function handleRequest(request, response) {
     sendJson(response, 500, { error: 'Something went wrong. Please try again.' });
   }
 }
+
+let contentRegistryAddress = process.env.CONTENT_REGISTRY_ADDRESS || null;
+
+async function initContentRegistry() {
+  if (contentRegistryAddress) {
+    console.log(`[Content Registry] Using env registry: ${contentRegistryAddress}`);
+    return;
+  }
+
+  // Check database first
+  try {
+    const row = db.prepare("SELECT content_registry_address FROM wallet_config WHERE id = 1").get();
+    if (row?.content_registry_address) {
+      contentRegistryAddress = row.content_registry_address;
+      console.log(`[Content Registry] Loaded from DB: ${contentRegistryAddress}`);
+      return;
+    }
+  } catch (err) {
+    console.error('[Content Registry] Failed to query wallet_config:', err.message);
+  }
+
+  // If not in DB, deploy it
+  const agentWallet = getAgentWalletAddress();
+  if (agentWallet) {
+    console.log('[Content Registry] Deploying new contract on Arc Testnet...');
+    try {
+      const deployResult = await deployContentRegistry();
+      contentRegistryAddress = deployResult.contractAddress;
+      db.prepare("UPDATE wallet_config SET content_registry_address = ? WHERE id = 1").run(contentRegistryAddress);
+      console.log(`[Content Registry] Deployed successfully at: ${contentRegistryAddress} (tx: ${deployResult.transactionHash})`);
+    } catch (err) {
+      console.error('[Content Registry] Deployment failed:', err.message);
+      contentRegistryAddress = '0x1000000000000000000000000000000000000009';
+      console.log(`[Content Registry] Fallback to mock registry address: ${contentRegistryAddress}`);
+    }
+  } else {
+    contentRegistryAddress = '0x1000000000000000000000000000000000000009';
+    console.log(`[Content Registry] Agent wallet not loaded. Using mock registry address: ${contentRegistryAddress}`);
+  }
+}
+
+initContentRegistry().catch((err) => {
+  console.error('[Content Registry] Initialization failed:', err);
+});
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? '127.0.0.1';

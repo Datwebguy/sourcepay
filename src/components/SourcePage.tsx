@@ -106,6 +106,26 @@ export function SourcePage({
                       Wallet signed
                     </span>
                   )}
+                  {source.registryTxHash && source.registryStatus === 'registered' && (
+                    <a
+                      href={`https://testnet.arcscan.app/tx/${source.registryTxHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-full border border-[#5FA9FF]/25 bg-[#5FA9FF]/10 px-2.5 py-1 text-xs font-bold text-[#9CCCFF] hover:underline"
+                    >
+                      On-Chain Registered
+                    </a>
+                  )}
+                  {source.twitterHandle && (
+                    <span className="rounded-full border border-[#5FA9FF]/25 bg-[#5FA9FF]/10 px-2.5 py-1 text-xs font-bold text-[#9CCCFF]">
+                      🐦 @{source.twitterHandle}
+                    </span>
+                  )}
+                  {source.mediumHandle && (
+                    <span className="rounded-full border border-[#5FBF7A]/25 bg-[#5FBF7A]/10 px-2.5 py-1 text-xs font-bold text-[#8CE0A0]">
+                      📝 @{source.mediumHandle}
+                    </span>
+                  )}
                 </div>
                 <h1 className="max-w-3xl text-2xl font-bold leading-tight sm:text-3xl">
                   {source.title}

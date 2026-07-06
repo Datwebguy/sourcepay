@@ -985,13 +985,37 @@ export function PlatformPage({
                                   <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/[0.06] text-white/70">
                                     <Icon size={16} strokeWidth={2.25} />
                                   </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => onOpenSource(source.id)}
-                                    className="text-left font-semibold text-white underline-offset-4 hover:text-[#9CCCFF] hover:underline"
-                                  >
-                                    {source.title}
-                                  </button>
+                                  <div className="flex flex-col">
+                                    <button
+                                      type="button"
+                                      onClick={() => onOpenSource(source.id)}
+                                      className="text-left font-semibold text-white underline-offset-4 hover:text-[#9CCCFF] hover:underline"
+                                    >
+                                      {source.title}
+                                    </button>
+                                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                      {source.registryTxHash && source.registryStatus === 'registered' && (
+                                        <a
+                                          href={`https://testnet.arcscan.app/tx/${source.registryTxHash}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-1 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF] hover:underline"
+                                        >
+                                          On-Chain
+                                        </a>
+                                      )}
+                                      {source.twitterHandle && (
+                                        <span className="inline-flex items-center gap-0.5 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF]">
+                                          🐦 @{source.twitterHandle}
+                                        </span>
+                                      )}
+                                      {source.mediumHandle && (
+                                        <span className="inline-flex items-center gap-0.5 rounded bg-[#5FBF7A]/12 border border-[#5FBF7A]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#8CE0A0]">
+                                          📝 @{source.mediumHandle}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
                                 </div>
                               </td>
                               <td className="px-4 py-3 text-white/72">{source.kind}</td>

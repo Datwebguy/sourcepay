@@ -8,6 +8,7 @@ import {
   Wallet,
   Download,
   Database,
+  ShieldCheck,
 } from 'lucide-react';
 import type {
   ConnectedWallet,
@@ -79,9 +80,32 @@ export function CreatorPage({
   const [earningsWallet, setEarningsWallet] = useState('');
   const [isCheckingEarnings, setIsCheckingEarnings] = useState(false);
   const [earningsLoadedMessage, setEarningsLoadedMessage] = useState('');
-  const [activeTab, setActiveTab] = useState<'payouts' | 'register'>('payouts');
+  const [activeTab, setActiveTab] = useState<'payouts' | 'register' | 'identity'>('payouts');
+  const [linkedTwitter, setLinkedTwitter] = useState<string | null>(null);
+  const [linkedMedium, setLinkedMedium] = useState<string | null>(null);
+  const [twitterInput, setTwitterInput] = useState('');
+  const [mediumInput, setMediumInput] = useState('');
+  const [isLinking, setIsLinking] = useState(false);
 
   const sourceWalletFilter = connectedWallet.address || draft.wallet.trim();
+
+  const loadSocials = async (walletAddress: string) => {
+    try {
+      const payload = await requestJson<{ socials: { platform: string; handle: string }[] }>(
+        `/api/socials?wallet=${walletAddress}`,
+      );
+      let twitter: string | null = null;
+      let medium: string | null = null;
+      payload.socials.forEach((social) => {
+        if (social.platform === 'twitter') twitter = social.handle;
+        if (social.platform === 'medium') medium = social.handle;
+      });
+      setLinkedTwitter(twitter);
+      setLinkedMedium(medium);
+    } catch (e) {
+      console.error('Failed to load linked socials:', e);
+    }
+  };
 
   useEffect(() => {
     if (!connectedWallet.address) return;
@@ -104,8 +128,11 @@ export function CreatorPage({
   useEffect(() => {
     if (connectedWallet.address) {
       loadSources(connectedWallet.address);
+      loadSocials(connectedWallet.address);
     } else {
       setSources([]);
+      setLinkedTwitter(null);
+      setLinkedMedium(null);
     }
   }, [connectedWallet.address]);
 
@@ -336,6 +363,76 @@ export function CreatorPage({
     }
   };
 
+  const handleLinkSocial = async (platform: 'twitter' | 'medium', handleVal: string) => {
+    setError('');
+    setInfo('');
+    if (!handleVal.trim()) {
+      setError('Please enter a valid handle.');
+      return;
+    }
+
+    setIsLinking(true);
+    try {
+      let signer = connectedWallet.address;
+      if (!signer) {
+        signer = await onConnectWallet();
+      }
+      if (!signer) {
+        throw new Error('Connect your wallet before linking social accounts.');
+      }
+      const provider = getEthereumProvider();
+      if (!provider) {
+        throw new Error('A browser wallet is required to sign this action.');
+      }
+      await ensureArcNetwork(provider);
+
+      const challengePayload = await requestJson<{ challenge: any }>(
+        '/api/auth/challenge',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            wallet: signer,
+            purpose: 'link-social',
+          }),
+        },
+      );
+      const authSignature = await provider.request({
+        method: 'personal_sign',
+        params: [challengePayload.challenge.message, signer],
+      });
+
+      const response = await requestJson<{ success: boolean; handle: string }>('/api/socials/link', {
+        method: 'POST',
+        body: JSON.stringify({
+          wallet: signer,
+          ownerWallet: signer,
+          challengeId: challengePayload.challenge.id,
+          authSignature: String(authSignature),
+          platform,
+          handle: handleVal,
+        }),
+      });
+
+      if (response.success) {
+        setInfo(`Linked ${platform === 'twitter' ? 'Twitter/X' : 'Medium'} successfully!`);
+        if (platform === 'twitter') {
+          setLinkedTwitter(response.handle);
+          setTwitterInput('');
+        } else {
+          setLinkedMedium(response.handle);
+          setMediumInput('');
+        }
+        if (connectedWallet.address) {
+          await loadSources(connectedWallet.address);
+        }
+      }
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setIsLinking(false);
+    }
+  };
+
   return (
     <section
       className="min-h-screen px-3 py-3 text-white sm:px-5 sm:py-5"
@@ -374,6 +471,7 @@ export function CreatorPage({
               {[
                 { id: 'payouts', label: 'Earnings & Payouts', icon: Wallet },
                 { id: 'register', label: 'Register Content', icon: Plus },
+                { id: 'identity', label: 'Verify Identity', icon: ShieldCheck },
               ].map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
@@ -727,6 +825,28 @@ export function CreatorPage({
                                     {item.title}
                                   </button>
                                   <p className="text-[10px] text-white/34 mt-0.5">{formatUsd(item.price)} USDC · {shortFingerprint(item.fingerprint)}</p>
+                                  <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                    {item.registryTxHash && item.registryStatus === 'registered' && (
+                                      <a
+                                        href={`https://testnet.arcscan.app/tx/${item.registryTxHash}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="inline-flex items-center gap-1 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF] hover:underline"
+                                      >
+                                        On-Chain
+                                      </a>
+                                    )}
+                                    {item.twitterHandle && (
+                                      <span className="inline-flex items-center gap-0.5 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF]">
+                                        🐦 @{item.twitterHandle}
+                                      </span>
+                                    )}
+                                    {item.mediumHandle && (
+                                      <span className="inline-flex items-center gap-0.5 rounded bg-[#5FBF7A]/12 border border-[#5FBF7A]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#8CE0A0]">
+                                        📝 @{item.mediumHandle}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                               <button
@@ -744,6 +864,83 @@ export function CreatorPage({
                     </div>
                   </div>
                 </section>
+              </div>
+            )}
+
+            {activeTab === 'identity' && (
+              <div className="space-y-6 max-w-3xl">
+                <div className="rounded-[8px] border border-white/10 bg-[#111]/90 p-4 space-y-4">
+                  <div className="border-b border-white/10 pb-3">
+                    <h3 className="text-base font-bold text-white">Verify Publishing Channels</h3>
+                    <p className="text-xs leading-relaxed text-white/55 mt-0.5">
+                      Link your X (Twitter) or Medium accounts to this wallet. All content registered by this wallet will inherit these verified badges in the marketplace.
+                    </p>
+                  </div>
+
+                  <div className="space-y-6">
+                    {/* Twitter Linking */}
+                    <div className="space-y-3">
+                      <span className="block text-xs font-bold uppercase tracking-[0.16em] text-white/60">
+                        🐦 X / Twitter Account
+                      </span>
+                      {linkedTwitter ? (
+                        <div className="flex items-center justify-between rounded-[8px] border border-[#5FBF7A]/20 bg-[#5FBF7A]/5 px-3 py-2 text-sm font-semibold text-[#8CE0A0]">
+                          <span>Linked Handle: @{linkedTwitter}</span>
+                          <span className="text-xs font-bold uppercase tracking-wider text-[#5FBF7A]">Active</span>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            placeholder="Enter X handle (e.g. @myhandle)"
+                            value={twitterInput}
+                            onChange={(e) => setTwitterInput(e.target.value)}
+                            className="flex-1 rounded-[8px] border border-white/10 bg-black/30 px-3 py-2 text-sm font-medium text-white outline-none focus:border-[#5FBF7A]/80"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleLinkSocial('twitter', twitterInput)}
+                            disabled={isLinking || !twitterInput.trim()}
+                            className="rounded-[8px] bg-white px-4 py-2 text-xs font-bold text-black uppercase tracking-[0.10em] hover:bg-[#5FA9FF] transition disabled:opacity-40"
+                          >
+                            Link X
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Medium Linking */}
+                    <div className="space-y-3">
+                      <span className="block text-xs font-bold uppercase tracking-[0.16em] text-white/60">
+                        📝 Medium Publication Profile
+                      </span>
+                      {linkedMedium ? (
+                        <div className="flex items-center justify-between rounded-[8px] border border-[#5FBF7A]/20 bg-[#5FBF7A]/5 px-3 py-2 text-sm font-semibold text-[#8CE0A0]">
+                          <span>Linked Profile: @{linkedMedium}</span>
+                          <span className="text-xs font-bold uppercase tracking-wider text-[#5FBF7A]">Active</span>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            placeholder="Enter Medium handle (e.g. @myhandle)"
+                            value={mediumInput}
+                            onChange={(e) => setMediumInput(e.target.value)}
+                            className="flex-1 rounded-[8px] border border-white/10 bg-black/30 px-3 py-2 text-sm font-medium text-white outline-none focus:border-[#5FBF7A]/80"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleLinkSocial('medium', mediumInput)}
+                            disabled={isLinking || !mediumInput.trim()}
+                            className="rounded-[8px] bg-white px-4 py-2 text-xs font-bold text-black uppercase tracking-[0.10em] hover:bg-[#5FA9FF] transition disabled:opacity-40"
+                          >
+                            Link Medium
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
           </div>

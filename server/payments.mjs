@@ -9,7 +9,7 @@ import { BatchFacilitatorClient } from '@circle-fin/x402-batching/server';
 import { CHAIN_CONFIGS } from '@circle-fin/x402-batching/client';
 import { x402Version } from '@x402/core';
 import { BATCH_SETTLEMENT_SCHEME } from '@x402/evm';
-import { getAddress, isAddress, recoverTypedDataAddress } from 'viem';
+import { getAddress, isAddress, recoverTypedDataAddress, createWalletClient, createPublicClient, http, defineChain } from 'viem';
 import { randomBytes } from 'node:crypto';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -624,4 +624,128 @@ export async function checkTransactionSettled(txHash) {
   }
   return false;
 }
+
+const CONTENT_REGISTRY_ABI = [
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "contentHash", "type": "bytes32" },
+      { "indexed": true, "internalType": "address", "name": "creatorWallet", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "citationPrice", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "timestamp", "type": "uint256" }
+    ],
+    "name": "ContentRegistered",
+    "type": "event"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "contentHash", "type": "bytes32" },
+      { "internalType": "address", "name": "creatorWallet", "type": "address" },
+      { "internalType": "uint256", "name": "citationPrice", "type": "uint256" }
+    ],
+    "name": "registerContent",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      { "internalType": "bytes32", "name": "", "type": "bytes32" }
+    ],
+    "name": "registry",
+    "outputs": [
+      { "internalType": "bytes32", "name": "contentHash", "type": "bytes32" },
+      { "internalType": "address", "name": "creatorWallet", "type": "address" },
+      { "internalType": "uint256", "name": "citationPrice", "type": "uint256" },
+      { "internalType": "uint256", "name": "timestamp", "type": "uint256" }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
+];
+
+const CONTENT_REGISTRY_BYTECODE = "6080604052348015600e575f5ffd5b506104ac8061001c5f395ff3fe608060405234801561000f575f5ffd5b5060043610610034575f3560e01c80632bc54676146100385780637ef5029814610054575b5f5ffd5b610052600480360381019061004d91906102ec565b610087565b005b61006e6004803603810190610069919061033c565b6101de565b60405161007e9493929190610394565b60405180910390f35b5f5f5f8581526020019081526020015f2060030154146100dc576040517f08c379a00000000000000000000000000000000000000000000000000000000081526004016100d390610431565b60405180910390fd5b60405180608001604052808481526020018373ffffffffffffffffffffffffffffffffffffffff168152602001828152602001428152505f5f8581526020019081526020015f205f820151815f01556020820151816001015f6101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff16021790555060408201518160020155606082015181600301559050508173ffffffffffffffffffffffffffffffffffffffff16837f6470bc8ae9dba4734ee4ab805bf11730a218e9dfe4083303a308995781320e1383426040516101d192919061044f565b60405180910390a3505050565b5f602052805f5260405f205f91509050805f015490806001015f9054906101000a900473ffffffffffffffffffffffffffffffffffffffff16908060020154908060030154905084565b5f5ffd5b5f819050919050565b61023e8161022c565b8114610248575f5ffd5b50565b5f8135905061025981610235565b92915050565b5f73ffffffffffffffffffffffffffffffffffffffff82169050919050565b5f6102888261025f565b9050919050565b6102988161027e565b81146102a2575f5ffd5b50565b5f813590506102b38161028f565b92915050565b5f819050919050565b6102cb816102b9565b81146102d5575f5ffd5b50565b5f813590506102e6816102c2565b92915050565b5f5f5f6060848603121561030357610302610228565b5b5f6103108682870161024b565b9350506020610321868287016102a5565b9250506040610332868287016102d8565b9150509250925092565b5f6020828403121561035157610350610228565b5b5f61035e8482850161024b565b91505092915050565b6103708161022c565b82525050565b61037f8161027e565b82525050565b61038e816102b9565b82525050565b5f6080820190506103a75f830187610367565b6103b46020830186610376565b6103c16040830185610385565b6103ce6060830184610385565b95945050505050565b5f82825260208201905092915050565b7f436f6e74656e7420616c726561647920726567697374657265640000000000005f82015250565b5f61041b601a836103d7565b9150610426826103e7565b602082019050919050565b5f6020820190508181035f8301526104488161040f565b9050919050565b5f6040820190506104625f830185610385565b61046f6020830184610385565b939250505056fea2646970667358221220acd5448b10a3f20f18cb8ada2bfed0ba6ab6aaa6fbc4210da077ec36b22409af64736f6c63430008230033";
+
+const arcTestnetChain = defineChain({
+  id: 5042002,
+  name: 'Arc Testnet',
+  network: 'arc-testnet',
+  nativeCurrency: {
+    decimals: 18,
+    name: 'ARC',
+    symbol: 'ARC',
+  },
+  rpcUrls: {
+    default: {
+      http: [process.env.ARC_RPC_URL || 'https://rpc.testnet.arc.network'],
+    },
+    public: {
+      http: [process.env.ARC_RPC_URL || 'https://rpc.testnet.arc.network'],
+    },
+  },
+  blockExplorers: {
+    default: { name: 'ArcScan', url: 'https://testnet.arcscan.app' },
+  },
+});
+
+function getClients() {
+  const rpcUrl = process.env.ARC_RPC_URL || 'https://rpc.testnet.arc.network';
+  const publicClient = createPublicClient({
+    chain: arcTestnetChain,
+    transport: http(rpcUrl),
+  });
+
+  let walletClient = null;
+  if (agentAccount) {
+    walletClient = createWalletClient({
+      account: agentAccount,
+      chain: arcTestnetChain,
+      transport: http(rpcUrl),
+    });
+  }
+
+  return { publicClient, walletClient };
+}
+
+export async function deployContentRegistry() {
+  const { publicClient, walletClient } = getClients();
+  if (!walletClient) {
+    throw new Error('Agent wallet private key not configured.');
+  }
+
+  const hash = await walletClient.deployContract({
+    abi: CONTENT_REGISTRY_ABI,
+    bytecode: `0x${CONTENT_REGISTRY_BYTECODE}`,
+  });
+
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  return {
+    contractAddress: receipt.contractAddress,
+    transactionHash: hash,
+  };
+}
+
+export async function registerContentOnChain(contentHash, creatorWallet, citationPrice, registryAddress) {
+  if (!registryAddress || registryAddress === '0x0000000000000000000000000000000000000000') {
+    throw new Error('On-chain content registry address is not configured.');
+  }
+
+  const { publicClient, walletClient } = getClients();
+  if (!walletClient) {
+    throw new Error('Agent wallet private key not configured.');
+  }
+
+  const cleanHash = contentHash.startsWith('0x') ? contentHash : `0x${contentHash}`;
+  const priceAtomic = BigInt(Math.round(citationPrice * 1_000_000));
+
+  const hash = await walletClient.writeContract({
+    address: registryAddress,
+    abi: CONTENT_REGISTRY_ABI,
+    functionName: 'registerContent',
+    args: [cleanHash, creatorWallet, priceAtomic],
+  });
+
+  return hash;
+}
+
 
