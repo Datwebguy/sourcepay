@@ -5,4 +5,5 @@ data
 .git
 .codex
 .agents
+QuorixASP
 npm-debug.log*
