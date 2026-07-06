@@ -596,3 +596,32 @@ function withTimeout(promise, timeoutMs, timeoutMessage) {
     clearTimeout(timeoutId);
   });
 }
+
+export async function checkTransactionSettled(txHash) {
+  if (!txHash || typeof txHash !== 'string' || !txHash.startsWith('0x')) {
+    return false;
+  }
+  const rpcUrl = process.env.ARC_RPC_URL || process.env.RPC || 'https://rpc.testnet.arc.network';
+  try {
+    const response = await fetch(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_getTransactionReceipt',
+        params: [txHash],
+      }),
+    });
+    if (!response.ok) return false;
+    const data = await response.json();
+    const receipt = data?.result;
+    if (receipt && receipt.blockNumber && (receipt.status === '0x1' || Number(receipt.status) === 1)) {
+      return true;
+    }
+  } catch (err) {
+    console.error(`Error checking transaction ${txHash}:`, err);
+  }
+  return false;
+}
+

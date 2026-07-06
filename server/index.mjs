@@ -19,6 +19,7 @@ import {
   isEvmAddress,
   getAgentWalletAddress,
   generateAgentWalletPayments,
+  checkTransactionSettled,
 } from './payments.mjs';
 
 loadEnv();
@@ -27,9 +28,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const dataDir = join(__dirname, '..', 'data');
 const distDir = join(__dirname, '..', 'dist');
 const distIndexPath = join(distDir, 'index.html');
-mkdirSync(dataDir, { recursive: true });
-
 const dbPath = process.env.SOURCEPAY_DB_PATH ?? join(dataDir, 'sourcepay.sqlite');
+mkdirSync(dirname(dbPath), { recursive: true });
 const db = new DatabaseSync(dbPath);
 const sourceKinds = new Set(['Article', 'Social post', 'Transcript']);
 const maxSourcePreviewBytes = 500_000;
@@ -2028,7 +2028,10 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
           perAnswerAmount: Number(policyRow.perAnswerAmount),
           enabledKinds: JSON.parse(policyRow.enabledKinds),
         };
-        activeBudget = policy.perAnswerAmount;
+        if (normalizedBudget > policy.maxSpendLimit) {
+          return { error: `Requested budget of ${normalizedBudget} USDC exceeds your global spend policy limit of ${policy.maxSpendLimit} USDC.` };
+        }
+        activeBudget = Math.min(normalizedBudget, policy.perAnswerAmount);
         activeKinds = policy.enabledKinds.filter((k) => sourceKinds.has(k));
         if (activeKinds.length === 0) {
           return { error: 'Your policy disables all eligible source classes. Please enable at least one in the Policy tab.' };
@@ -2675,6 +2678,26 @@ async function handleRequest(request, response) {
       if (!receipt) {
         sendJson(response, 404, { error: 'Receipt not found.' });
         return;
+      }
+
+      if (receipt.paymentStatus === 'paid' && receipt.paymentSettlements && receipt.paymentSettlements.length > 0) {
+        let allConfirmed = true;
+        for (const settlement of receipt.paymentSettlements) {
+          if (settlement.transactionId) {
+            const confirmed = await checkTransactionSettled(settlement.transactionId);
+            if (!confirmed) {
+              allConfirmed = false;
+              break;
+            }
+          } else {
+            allConfirmed = false;
+            break;
+          }
+        }
+        if (allConfirmed) {
+          statements.updateRunPaymentStatus.run('settled', receipt.id);
+          receipt.paymentStatus = 'settled';
+        }
       }
 
       sendJson(response, 200, { receipt });

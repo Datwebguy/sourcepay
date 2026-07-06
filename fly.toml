@@ -7,12 +7,12 @@ primary_region = "iad"
 [env]
   HOST = "0.0.0.0"
   PORT = "8080"
-  SOURCEPAY_DB_PATH = "/data/sourcepay.sqlite"
+  SOURCEPAY_DB_PATH = "/app/data/sourcepay.sqlite"
   SOURCEPAY_NETWORK = "Arc Testnet"
 
 [[mounts]]
   source = "sourcepay_data"
-  destination = "/data"
+  destination = "/app/data"
 
 [http_service]
   internal_port = 8080

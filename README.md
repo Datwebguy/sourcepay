@@ -250,7 +250,7 @@ fly checks list
 fly logs
 ```
 
-The Fly config mounts `/data` and stores SQLite at `/data/sourcepay.sqlite`, so source registrations, receipts, auth challenges, and payment attempts survive deploys and restarts.
+The Fly config mounts `/app/data` and stores SQLite at `/app/data/sourcepay.sqlite`, so source registrations, receipts, auth challenges, and payment attempts survive deploys and restarts.
 
 ## Manual Test Checklist
 
@@ -288,3 +288,27 @@ Run these checks on `https://sourcepay.fly.dev/` after each production deploy:
 - Circle testnet USDC faucet availability for the buyer wallet.
 - Wallet popup behavior across the wallet extension used in the demo.
 - Two-browser, two-wallet isolation test.
+
+## Audit Improvements
+
+We refactored and enhanced the codebase based on a full architectural audit:
+
+1. **Modular Codebase Structure**:
+   - `src/types.ts`: Holds all TypeScript interface and type declarations.
+   - `src/utils.ts`: Contains Web3 provider setup, helper methods, and API integration layers.
+   - `src/components/Common.tsx`: Holds reusable layout and feedback widgets.
+   - Page-level views (`LandingPage.tsx`, `PlatformPage.tsx`, `CreatorPage.tsx`, `SourcePage.tsx`, `ReceiptPage.tsx`) are now isolated, clean sub-components.
+   - `src/App.tsx` has been slimmed down to only serve as the main console state machine and navigation router.
+
+2. **Fly.io Persistent SQLite Mounting**:
+   - Volume target updated to `/app/data` to match the application data directory correctly.
+   - Server dynamically prepares target directories recursively, preventing failures during initial database mounts.
+
+3. **On-Chain Settlement Verification & UI Polling**:
+   - Added `checkTransactionSettled(txHash)` using native JSON-RPC `eth_getTransactionReceipt` checks directly from the Node backend to Arc Testnet.
+   - When a receipt transitions to `paid` status, `ReceiptPage.tsx` polls the server status every 4 seconds. The backend verifies all EIP-3009 transactions are confirmed on-chain, automatically settling the receipt state in the DB and updating the frontend UI dynamically.
+
+4. **Spend Limit Enforcements**:
+   - Budget selection sliders and text inputs are dynamically capped by the buyer's saved policy limit (`maxSpendLimit`) on the Requests tab.
+   - Backend `routeSources` validates requests against user policy configuration, returning error messages if the client sends query budgets exceeding their policy limits.
+
