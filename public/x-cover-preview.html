@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SourcePay X Cover Preview</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #0a0a0a;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            color: #fff;
+        }
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #5FA9FF, #5FBF7A, #F4845F);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .subtitle {
+            text-align: center;
+            color: #999;
+            margin-bottom: 30px;
+        }
+        .preview-section {
+            background: #111;
+            border: 2px solid #333;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+        .preview-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #5FA9FF;
+            margin-bottom: 15px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .preview-frame {
+            background: #000;
+            border: 1px solid #222;
+            border-radius: 8px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            aspect-ratio: 3;
+            max-width: 100%;
+        }
+        svg {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .info-card {
+            background: #0a0a0a;
+            border: 1px solid #333;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 13px;
+        }
+        .info-card .label {
+            color: #999;
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+        }
+        .info-card .value {
+            color: #fff;
+            font-weight: 500;
+        }
+        .actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+        button {
+            background: linear-gradient(135deg, #5FA9FF, #5FBF7A);
+            color: #000;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            font-size: 14px;
+        }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(95, 169, 255, 0.3);
+        }
+        button:active {
+            transform: translateY(0);
+        }
+        .tips {
+            background: #1a1a1a;
+            border-left: 4px solid #5FA9FF;
+            padding: 15px;
+            border-radius: 6px;
+            margin-top: 30px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .tips h3 {
+            margin-top: 0;
+            color: #5FA9FF;
+        }
+        .tips ul {
+            margin: 10px 0;
+            padding-left: 20px;
+        }
+        .tips li {
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎨 SourcePay X Cover Preview</h1>
+        <p class="subtitle">Professional cover image for Twitter/X</p>
+        
+        <div class="preview-section">
+            <div class="preview-title">📸 X Cover (1500 × 500px)</div>
+            <div class="preview-frame" id="previewFrame">
+                <svg width="1500" height="500" viewBox="0 0 1500 500" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Background gradient -->
+                    <defs>
+                        <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style="stop-color:#071018;stop-opacity:1" />
+                            <stop offset="50%" style="stop-color:#0f1112;stop-opacity:1" />
+                            <stop offset="100%" style="stop-color:#17100e;stop-opacity:1" />
+                        </linearGradient>
+                        <linearGradient id="accentGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style="stop-color:#5FA9FF;stop-opacity:1" />
+                            <stop offset="50%" style="stop-color:#5FBF7A;stop-opacity:1" />
+                            <stop offset="100%" style="stop-color:#F4845F;stop-opacity:1" />
+                        </linearGradient>
+                    </defs>
+                    
+                    <rect width="1500" height="500" fill="url(#bgGradient)"/>
+                    <circle cx="150" cy="100" r="200" fill="#5FA9FF" opacity="0.08"/>
+                    <circle cx="1350" cy="400" r="250" fill="#F4845F" opacity="0.06"/>
+                    <circle cx="1100" cy="50" r="180" fill="#5FBF7A" opacity="0.05"/>
+                    
+                    <g>
+                        <circle cx="200" cy="250" r="140" fill="#071018" opacity="0.6"/>
+                        <circle cx="200" cy="250" r="130" fill="url(#accentGradient)" opacity="0.12"/>
+                        <rect x="120" y="170" width="160" height="160" rx="32" fill="#0B0E11"/>
+                        <rect x="135" y="185" width="130" height="130" rx="26" fill="url(#accentGradient)" opacity="0.3"/>
+                        <text x="200" y="275" font-family="Arial, sans-serif" font-size="90" font-weight="bold" text-anchor="middle" fill="url(#accentGradient)" letter-spacing="-2">$</text>
+                    </g>
+                    
+                    <g>
+                        <text x="750" y="120" font-family="Inter, Arial, sans-serif" font-size="72" font-weight="900" text-anchor="middle" fill="white" letter-spacing="-2">SourcePay</text>
+                        <line x1="500" y1="155" x2="1000" y2="155" stroke="url(#accentGradient)" stroke-width="4" stroke-linecap="round"/>
+                        <text x="750" y="240" font-family="Inter, Arial, sans-serif" font-size="44" font-weight="700" text-anchor="middle" fill="#5FA9FF" letter-spacing="1">AI Citations That Pay</text>
+                        <text x="750" y="310" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="600" text-anchor="middle" fill="#FFFFFF" opacity="0.85" letter-spacing="0.5">Creators earn. Agents cite. On-chain.</text>
+                    </g>
+                    
+                    <g>
+                        <rect x="1050" y="160" width="380" height="80" rx="12" fill="#5FA9FF" opacity="0.12" stroke="#5FA9FF" stroke-width="2"/>
+                        <circle cx="1085" cy="200" r="18" fill="#5FA9FF" opacity="0.6"/>
+                        <text x="1120" y="215" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#5FA9FF">On-Chain</text>
+                        <text x="1120" y="235" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF" opacity="0.7">Arc Testnet USDC</text>
+                        
+                        <rect x="1050" y="270" width="380" height="80" rx="12" fill="#5FBF7A" opacity="0.12" stroke="#5FBF7A" stroke-width="2"/>
+                        <circle cx="1085" cy="310" r="18" fill="#5FBF7A" opacity="0.6"/>
+                        <text x="1120" y="325" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#5FBF7A">Verified</text>
+                        <text x="1120" y="345" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF" opacity="0.7">Social Identity Badges</text>
+                    </g>
+                    
+                    <g>
+                        <text x="750" y="450" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="700" text-anchor="middle" fill="#F4845F" letter-spacing="0.5">sourcepay.fly.dev</text>
+                        <line x1="580" y1="430" x2="920" y2="430" stroke="#F4845F" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+                    </g>
+                    
+                    <rect width="1500" height="500" fill="url(#bgGradient)" opacity="0.02" style="mix-blend-mode: multiply"/>
+                </svg>
+            </div>
+            
+            <div class="info-grid">
+                <div class="info-card">
+                    <div class="label">📐 Dimensions</div>
+                    <div class="value">1500 × 500 pixels</div>
+                </div>
+                <div class="info-card">
+                    <div class="label">🎨 Format</div>
+                    <div class="value">SVG (Scalable Vector)</div>
+                </div>
+                <div class="info-card">
+                    <div class="label">📍 Platform</div>
+                    <div class="value">X/Twitter Cover Photo</div>
+                </div>
+                <div class="info-card">
+                    <div class="label">💾 File Size</div>
+                    <div class="value">~8 KB (SVG)</div>
+                </div>
+            </div>
+            
+            <div class="actions">
+                <button onclick="downloadSvg()">↓ Download SVG</button>
+                <button onclick="downloadPng()">↓ Download PNG (1500x500)</button>
+                <button onclick="copyStyle()">📋 Copy Design Notes</button>
+            </div>
+        </div>
+        
+        <div class="tips">
+            <h3>💡 How to Use on X/Twitter</h3>
+            <ul>
+                <li><strong>Upload:</strong> Go to Settings → Profile → Edit Profile → Upload Cover Photo</li>
+                <li><strong>Dimensions:</strong> This cover is optimized for X at 1500×500 pixels</li>
+                <li><strong>Mobile:</strong> The design works on all devices and displays correctly</li>
+                <li><strong>Format:</strong> Use PNG for best compatibility on X</li>
+                <li><strong>Quality:</strong> Save at high quality (95% compression or higher)</li>
+            </ul>
+        </div>
+    </div>
+    
+    <script>
+        function downloadSvg() {
+            const svgPath = '/sourcepay-x-cover.svg';
+            const link = document.createElement('a');
+            link.href = svgPath;
+            link.download = 'sourcepay-x-cover.svg';
+            link.click();
+        }
+        
+        function downloadPng() {
+            // For now, provide instructions since we need sharp or similar
+            const msg = `To download as PNG, use this command:\n\nnode scripts/generate-x-cover.mjs\n\nOr install 'sharp' first:\nnpm install sharp --save-dev`;
+            alert(msg);
+        }
+        
+        function copyStyle() {
+            const notes = `SourcePay X Cover Design Notes:
+
+Design System:
+- Primary Color: #5FA9FF (Blue)
+- Secondary Color: #5FBF7A (Green)
+- Accent Color: #F4845F (Orange)
+- Background: Dark gradient (#071018 → #0f1112 → #17100e)
+- Font: Inter, sans-serif
+- Logo: Dollar sign in gradient circle
+- Layout: Left logo + Center text + Right badges
+
+Key Messages:
+- Main: "SourcePay"
+- Tagline: "AI Citations That Pay"
+- Subtitle: "Creators earn. Agents cite. On-chain."
+- URL: sourcepay.fly.dev
+- Features: On-Chain verification, Social Identity badges
+
+File Location: public/sourcepay-x-cover.svg`;
+            navigator.clipboard.writeText(notes);
+            alert('Design notes copied to clipboard!');
+        }
+    </script>
+</body>
+</html>

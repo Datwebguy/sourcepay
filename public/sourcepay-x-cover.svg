@@ -1,0 +1,88 @@
+<svg width="1500" height="500" viewBox="0 0 1500 500" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background gradient -->
+  <defs>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#071018;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#0f1112;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#17100e;stop-opacity:1" />
+    </linearGradient>
+    
+    <linearGradient id="accentGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#5FA9FF;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#5FBF7A;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#F4845F;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1500" height="500" fill="url(#bgGradient)"/>
+  
+  <!-- Decorative circles (subtle) -->
+  <circle cx="150" cy="100" r="200" fill="#5FA9FF" opacity="0.08"/>
+  <circle cx="1350" cy="400" r="250" fill="#F4845F" opacity="0.06"/>
+  <circle cx="1100" cy="50" r="180" fill="#5FBF7A" opacity="0.05"/>
+  
+  <!-- Left side: Logo area -->
+  <g>
+    <!-- Logo background circle -->
+    <circle cx="200" cy="250" r="140" fill="#071018" opacity="0.6"/>
+    <circle cx="200" cy="250" r="130" fill="url(#accentGradient)" opacity="0.12"/>
+    
+    <!-- Simplified SourcePay mark -->
+    <rect x="120" y="170" width="160" height="160" rx="32" fill="#0B0E11"/>
+    <rect x="135" y="185" width="130" height="130" rx="26" fill="url(#accentGradient)" opacity="0.3"/>
+    
+    <!-- Dollar sign inside circle -->
+    <text x="200" y="275" font-family="Arial, sans-serif" font-size="90" font-weight="bold" text-anchor="middle" fill="url(#accentGradient)" letter-spacing="-2">$</text>
+  </g>
+  
+  <!-- Center: Main text -->
+  <g>
+    <!-- Main heading -->
+    <text x="750" y="120" font-family="Inter, Arial, sans-serif" font-size="72" font-weight="900" text-anchor="middle" fill="white" letter-spacing="-2">
+      SourcePay
+    </text>
+    
+    <!-- Underline accent -->
+    <line x1="500" y1="155" x2="1000" y2="155" stroke="url(#accentGradient)" stroke-width="4" stroke-linecap="round"/>
+    
+    <!-- Tagline -->
+    <text x="750" y="240" font-family="Inter, Arial, sans-serif" font-size="44" font-weight="700" text-anchor="middle" fill="#5FA9FF" letter-spacing="1">
+      AI Citations That Pay
+    </text>
+    
+    <!-- Subtagline -->
+    <text x="750" y="310" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="600" text-anchor="middle" fill="#FFFFFF" opacity="0.85" letter-spacing="0.5">
+      Creators earn. Agents cite. On-chain.
+    </text>
+  </g>
+  
+  <!-- Right side: Features badges -->
+  <g>
+    <!-- Badge 1: On-Chain -->
+    <rect x="1050" y="160" width="380" height="80" rx="12" fill="#5FA9FF" opacity="0.12" stroke="#5FA9FF" stroke-width="2"/>
+    <circle cx="1085" cy="200" r="18" fill="#5FA9FF" opacity="0.6"/>
+    <text x="1120" y="215" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#5FA9FF">On-Chain</text>
+    <text x="1120" y="235" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF" opacity="0.7">Arc Testnet USDC</text>
+    
+    <!-- Badge 2: Verified -->
+    <rect x="1050" y="270" width="380" height="80" rx="12" fill="#5FBF7A" opacity="0.12" stroke="#5FBF7A" stroke-width="2"/>
+    <circle cx="1085" cy="310" r="18" fill="#5FBF7A" opacity="0.6"/>
+    <text x="1120" y="325" font-family="Inter, Arial, sans-serif" font-size="16" font-weight="700" fill="#5FBF7A">Verified</text>
+    <text x="1120" y="345" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="500" fill="#FFFFFF" opacity="0.7">Social Identity Badges</text>
+  </g>
+  
+  <!-- Bottom: URL and CTA -->
+  <g>
+    <!-- URL -->
+    <text x="750" y="450" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="700" text-anchor="middle" fill="#F4845F" letter-spacing="0.5">
+      sourcepay.fly.dev
+    </text>
+    
+    <!-- Decorative line -->
+    <line x1="580" y1="430" x2="920" y2="430" stroke="#F4845F" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+  </g>
+  
+  <!-- Grain effect overlay (subtle) -->
+  <rect width="1500" height="500" fill="url(#bgGradient)" opacity="0.02" style="mix-blend-mode: multiply"/>
+</svg>
