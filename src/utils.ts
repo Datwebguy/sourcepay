@@ -12,8 +12,8 @@ import type {
 
 // Constants
 export const SOURCE_KINDS: SourceKind[] = ['Article', 'Social post', 'Transcript'];
-export const MIN_USDC_AMOUNT = 0.000001;
-export const DEFAULT_SOURCE_PRICE = '0.000001';
+export const MIN_USDC_AMOUNT = 0;
+export const DEFAULT_SOURCE_PRICE = '0';
 export const DEFAULT_REQUEST_BUDGET = 5000;
 export const MAX_REQUEST_BUDGET = 10000;
 export const WALLETCONNECT_CONNECT_TIMEOUT_MS = 90_000;
@@ -500,49 +500,4 @@ export async function requestJsonWithStatus<T>(
   };
 }
 
-export const HERO_SOURCES: HeroSource[] = [
-  {
-    id: 'source-1',
-    label: 'Open-source LLM benchmarking findings',
-    type: 'Article',
-    price: '2.50 USDC',
-    paid: 'paid citation',
-    bg: '#0F2613',
-    panel: '#D4FFDC',
-    accent: '#0A260F',
-    icon: 'article',
-  },
-  {
-    id: 'source-2',
-    label: 'Stablecoin velocity data for Q4 2025',
-    type: 'Social post',
-    price: '0.45 USDC',
-    paid: 'paid citation',
-    bg: '#250D26',
-    panel: '#FFD9FF',
-    accent: '#260B26',
-    icon: 'social',
-  },
-  {
-    id: 'source-3',
-    label: 'Decentralized compute pricing transcript',
-    type: 'Transcript',
-    price: '8.00 USDC',
-    paid: 'paid citation',
-    bg: '#0F1A26',
-    panel: '#D9ECFF',
-    accent: '#0B1726',
-    icon: 'transcript',
-  },
-  {
-    id: 'source-4',
-    label: 'Verified citation licensing receipt',
-    type: 'Proof receipt',
-    price: '10.95 USDC',
-    paid: 'paid receipt',
-    bg: '#261C0F',
-    panel: '#82BEFF',
-    accent: '#102B4D',
-    icon: 'receipt',
-  },
-];
+export const HERO_SOURCES: HeroSource[] = [];
