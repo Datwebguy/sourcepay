@@ -12,8 +12,8 @@ import type {
 
 // Constants
 export const SOURCE_KINDS: SourceKind[] = ['Article', 'Social post', 'Transcript'];
-export const MIN_USDC_AMOUNT = 0;
-export const DEFAULT_SOURCE_PRICE = '0';
+export const MIN_USDC_AMOUNT = 0.000001;
+export const DEFAULT_SOURCE_PRICE = '0.000001';
 export const DEFAULT_REQUEST_BUDGET = 5000;
 export const MAX_REQUEST_BUDGET = 10000;
 export const WALLETCONNECT_CONNECT_TIMEOUT_MS = 90_000;
@@ -288,11 +288,11 @@ export async function sourceFingerprintForDraft(source: {
 }) {
   const payload = [
     source.title.trim(),
-    source.kind.trim(),
-    source.wallet.trim().toLowerCase(),
-    source.price.toFixed(6),
+    source.kind,
+    source.wallet.trim(),
+    String(source.price),
     source.content.trim(),
-  ].join('|');
+  ].join('\n');
   return sha256Hex(payload);
 }
 
@@ -500,4 +500,49 @@ export async function requestJsonWithStatus<T>(
   };
 }
 
-export const HERO_SOURCES: HeroSource[] = [];
+export const HERO_SOURCES: HeroSource[] = [
+  {
+    id: 'wallet-signed-source',
+    label: 'Wallet signed source',
+    type: 'Article',
+    price: '0.000001 USDC',
+    paid: 'creator-owned',
+    bg: '#071018',
+    panel: '#5FA9FF',
+    accent: '#071018',
+    icon: 'article',
+  },
+  {
+    id: 'licensed-social-cite',
+    label: 'Licensed social cite',
+    type: 'Social post',
+    price: 'priced per cite',
+    paid: 'paid by agent',
+    bg: '#11150f',
+    panel: '#7CE38B',
+    accent: '#071018',
+    icon: 'social',
+  },
+  {
+    id: 'receipt-proof',
+    label: 'Proof receipt',
+    type: 'Receipt',
+    price: 'x402 on Arc',
+    paid: 'verifiable',
+    bg: '#140f0d',
+    panel: '#F4845F',
+    accent: '#071018',
+    icon: 'receipt',
+  },
+  {
+    id: 'transcript-source',
+    label: 'Transcript source',
+    type: 'Transcript',
+    price: 'USDC payout',
+    paid: 'creator wallet',
+    bg: '#101116',
+    panel: '#C8B7FF',
+    accent: '#071018',
+    icon: 'transcript',
+  },
+];

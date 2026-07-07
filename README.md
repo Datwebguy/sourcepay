@@ -83,6 +83,8 @@ ARC_RPC_URL=
 SOURCEPAY_ARC_FAUCET_URL=
 SOURCEPAY_USDC_FAUCET_URL=
 SOURCEPAY_WALLETCONNECT_PROJECT_ID=
+CONTENT_REGISTRY_ADDRESS=
+SOURCEPAY_AUTO_DEPLOY_CONTENT_REGISTRY=0
 AGENT_PRIVATE_KEY=
 ```
 
@@ -104,6 +106,8 @@ SOURCEPAY_PROOF_VERIFY_LIMIT=30
 `SOURCEPAY_WALLETCONNECT_PROJECT_ID` is the Reown/WalletConnect project ID. It enables WalletConnect QR/app connections for mobile wallets such as OKX Wallet. Browser-injected wallets still work without it.
 
 `AGENT_PRIVATE_KEY` is a 32-byte hex private key (with or without `0x` prefix) for the autonomous agent's wallet. If provided, the server registers the agent's wallet address, allowing the agent to programmatically sign and pay creators using EIP-3009 TransferWithAuthorization payloads. If not provided, agent-wallet functions are disabled (returning `null` in config).
+
+`CONTENT_REGISTRY_ADDRESS` is optional. When it points to a real deployed Arc Testnet content registry, SourcePay will write source fingerprints on-chain. If it is not configured, source registration remains wallet-signed and off-chain only; SourcePay does not create fake registry transaction hashes. `SOURCEPAY_AUTO_DEPLOY_CONTENT_REGISTRY=1` can deploy the registry at startup only when `AGENT_PRIVATE_KEY` is configured and funded, but production deployments should prefer an explicit `CONTENT_REGISTRY_ADDRESS`.
 
 ## Main User Flows
 
@@ -232,6 +236,7 @@ fly secrets set ARC_RPC_URL="https://..."
 fly secrets set SOURCEPAY_ARC_FAUCET_URL="https://..."
 fly secrets set SOURCEPAY_USDC_FAUCET_URL="https://..."
 fly secrets set SOURCEPAY_WALLETCONNECT_PROJECT_ID="..."
+fly secrets set CONTENT_REGISTRY_ADDRESS="0x..."
 ```
 
 5. Deploy:
@@ -311,4 +316,3 @@ We refactored and enhanced the codebase based on a full architectural audit:
 4. **Spend Limit Enforcements**:
    - Budget selection sliders and text inputs are dynamically capped by the buyer's saved policy limit (`maxSpendLimit`) on the Requests tab.
    - Backend `routeSources` validates requests against user policy configuration, returning error messages if the client sends query budgets exceeding their policy limits.
-

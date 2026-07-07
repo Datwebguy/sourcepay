@@ -1050,7 +1050,10 @@ async function validateSource(input, existingSource = null) {
   }).catch(() => false);
 
   if (!verified) {
-    return { error: 'Wallet signature did not match this source registration.' };
+    return {
+      error:
+        'Wallet signature does not match the registration message. Please connect the same payout wallet used for source registration and sign again.',
+    };
   }
 
   return {
@@ -2683,7 +2686,7 @@ async function handleRequest(request, response) {
         ownershipMessage,
       );
 
-      // Deploy content to on-chain registry via Relayer
+      // Register content on-chain only when a real registry is configured.
       const createdRow = statements.getSource.get(id);
       const sourceNormalizedForFingerprint = {
         title: createdRow.title,
@@ -2695,30 +2698,24 @@ async function handleRequest(request, response) {
       const fingerprint = sourceFingerprint(sourceNormalizedForFingerprint);
 
       let registryTxHash = null;
-      let registryStatus = 'failed';
+      let registryStatus = contentRegistryAddress ? 'failed' : 'not_configured';
 
-      try {
-        registryTxHash = await registerContentOnChain(
-          fingerprint,
-          wallet,
-          price,
-          contentRegistryAddress,
-        );
-        registryStatus = 'registered';
-      } catch (chainErr) {
-        console.error(`[Content Registry] Relay failed for source ${id}:`, chainErr.message);
-        // Fallback for tests or missing testnet gas
-        if (
-          process.env.NODE_ENV === 'test' ||
-          process.env.SOURCEPAY_DISABLE_LOCAL_SIGNING === '1' ||
-          chainErr.message.includes('Agent wallet private key not configured')
-        ) {
-          registryTxHash = '0x' + '9'.repeat(64);
+      if (contentRegistryAddress) {
+        try {
+          registryTxHash = await registerContentOnChain(
+            fingerprint,
+            wallet,
+            price,
+            contentRegistryAddress,
+          );
           registryStatus = 'registered';
+        } catch (chainErr) {
+          console.error(`[Content Registry] Relay failed for source ${id}:`, chainErr.message);
+          registryStatus = 'failed';
         }
       }
 
-      if (registryTxHash) {
+      if (registryTxHash || registryStatus !== 'failed') {
         statements.updateSourceRegistry.run(registryTxHash, registryStatus, id);
       }
 
@@ -3071,32 +3068,30 @@ async function initContentRegistry() {
     console.error('[Content Registry] Failed to query wallet_config:', err.message);
   }
 
-  // If not in DB, deploy it
-  const agentWallet = getAgentWalletAddress();
-  if (agentWallet) {
-    console.log('[Content Registry] Deploying new contract on Arc Testnet...');
-    try {
-      const deployResult = await deployContentRegistry();
-      contentRegistryAddress = deployResult.contractAddress;
-      db.prepare("UPDATE wallet_config SET content_registry_address = ? WHERE id = 1").run(contentRegistryAddress);
-      console.log(`[Content Registry] Deployed successfully at: ${contentRegistryAddress} (tx: ${deployResult.transactionHash})`);
-    } catch (err) {
-      console.error('[Content Registry] Deployment failed:', err.message);
-      contentRegistryAddress = '0x1000000000000000000000000000000000000009';
-      console.log(`[Content Registry] Fallback to mock registry address: ${contentRegistryAddress}`);
+  if (process.env.SOURCEPAY_AUTO_DEPLOY_CONTENT_REGISTRY === '1') {
+    const agentWallet = getAgentWalletAddress();
+    if (!agentWallet) {
+      console.log('[Content Registry] Auto-deploy requested but AGENT_PRIVATE_KEY is not configured.');
+      return;
     }
-  } else {
-    contentRegistryAddress = '0x1000000000000000000000000000000000000009';
-    console.log(`[Content Registry] Agent wallet not loaded. Using mock registry address: ${contentRegistryAddress}`);
+
+    console.log('[Content Registry] Auto-deploying new contract on Arc Testnet...');
+    const deployResult = await deployContentRegistry();
+    contentRegistryAddress = deployResult.contractAddress;
+    db.prepare("UPDATE wallet_config SET content_registry_address = ? WHERE id = 1").run(contentRegistryAddress);
+    console.log(`[Content Registry] Deployed successfully at: ${contentRegistryAddress} (tx: ${deployResult.transactionHash})`);
+    return;
   }
+
+  console.log('[Content Registry] Not configured. SourcePay will register sources off-chain only.');
 }
 
 initContentRegistry().catch((err) => {
   console.error('[Content Registry] Initialization failed:', err);
 });
 
-const port = Number(process.env.PORT ?? 8787);
-const host = process.env.HOST ?? '127.0.0.1';
+const port = Number(process.env.PORT || process.env.SOURCEPAY_PORT || 8787);
+const host = process.env.HOST || process.env.SOURCEPAY_HOST || '127.0.0.1';
 if (process.env.SOURCEPAY_NO_LISTEN !== '1') {
   createServer(handleRequest).listen(port, host, () => {
     process.stdout.write(`SourcePay service listening on http://${host}:${port}\n`);

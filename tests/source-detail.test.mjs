@@ -1070,7 +1070,9 @@ test('hybrid ownership and trust layer verification', async () => {
     assert.equal(getSocialsPayload.socials[0].platform, 'twitter');
     assert.equal(getSocialsPayload.socials[0].handle, 'alice_writes');
 
-    // 5. Register content and verify it inherits social verification & triggers contract registry
+    // 5. Register content and verify it inherits social verification.
+    // On-chain registry writes are real-only: without CONTENT_REGISTRY_ADDRESS
+    // or explicit auto-deploy config, the source must not receive a fake tx hash.
     const title = 'Verified Post';
     const kind = 'Social post';
     const content = 'Test trust layer content';
@@ -1096,8 +1098,8 @@ test('hybrid ownership and trust layer verification', async () => {
     });
 
     assert.ok(regPayload.source.id);
-    assert.equal(regPayload.source.registryStatus, 'registered');
-    assert.ok(regPayload.source.registryTxHash);
+    assert.equal(regPayload.source.registryStatus, 'not_configured');
+    assert.equal(regPayload.source.registryTxHash, null);
     assert.equal(regPayload.source.twitterHandle, 'alice_writes');
 
   } finally {
@@ -1108,4 +1110,3 @@ test('hybrid ownership and trust layer verification', async () => {
     await rm(`${dbPath}-wal`, { force: true });
   }
 });
-

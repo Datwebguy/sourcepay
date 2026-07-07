@@ -330,7 +330,7 @@ export function CreatorPage({
       await requestJson(`/api/sources/${source.id}`, {
         method: 'DELETE',
         body: JSON.stringify({
-          wallet: signerAddress,
+          ownerWallet: signerAddress,
           archiveSignature: String(signature),
         }),
       });
@@ -385,6 +385,11 @@ export function CreatorPage({
         throw new Error('A browser wallet is required to sign this action.');
       }
       await ensureArcNetwork(provider);
+      const activePayer = await getActiveProviderAccount(provider);
+      if (!activePayer) {
+        throw new Error('Select the payout wallet in your browser extension before continuing.');
+      }
+      signer = activePayer;
 
       const challengePayload = await requestJson<{ challenge: any }>(
         '/api/auth/challenge',
