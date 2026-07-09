@@ -2715,9 +2715,9 @@ async function handleRequest(request, response) {
         }
       }
 
-      if (registryTxHash || registryStatus !== 'failed') {
-        statements.updateSourceRegistry.run(registryTxHash, registryStatus, id);
-      }
+      // Always persist real registry outcome (registered / failed / not_configured).
+      // Never invent a transaction hash when the write did not succeed.
+      statements.updateSourceRegistry.run(registryTxHash, registryStatus, id);
 
       const createdSource = normalizeSource(statements.getSource.get(id));
 

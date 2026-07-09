@@ -9,18 +9,16 @@ export function LandingPage({ onLaunch }: { onLaunch: () => void }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
   const isSmallViewport = useSmallViewport();
-  const hasHeroSources = HERO_SOURCES.length > 0;
-  const safeIndex = hasHeroSources ? activeIndex % HERO_SOURCES.length : 0;
-  const activeSource = hasHeroSources ? HERO_SOURCES[safeIndex] : null;
+  const activeSource = HERO_SOURCES[activeIndex];
   const roles = {
-    center: safeIndex,
-    left: hasHeroSources ? (safeIndex + HERO_SOURCES.length - 1) % HERO_SOURCES.length : 0,
-    right: hasHeroSources ? (safeIndex + 1) % HERO_SOURCES.length : 0,
-    back: hasHeroSources ? (safeIndex + 2) % HERO_SOURCES.length : 0,
+    center: activeIndex,
+    left: (activeIndex + HERO_SOURCES.length - 1) % HERO_SOURCES.length,
+    right: (activeIndex + 1) % HERO_SOURCES.length,
+    back: (activeIndex + 2) % HERO_SOURCES.length,
   };
 
   const navigate = (direction: Direction) => {
-    if (isAnimating || !hasHeroSources) return;
+    if (isAnimating) return;
 
     setIsAnimating(true);
     setActiveIndex((current) =>
@@ -35,7 +33,7 @@ export function LandingPage({ onLaunch }: { onLaunch: () => void }) {
     <section
       className="relative min-h-[100svh] w-full overflow-x-hidden overflow-y-auto"
       style={{
-        backgroundColor: activeSource?.bg ?? '#071018',
+        backgroundColor: activeSource.bg,
         transition: 'background-color 650ms cubic-bezier(0.4,0,0.2,1)',
       }}
     >
@@ -75,18 +73,17 @@ export function LandingPage({ onLaunch }: { onLaunch: () => void }) {
       </div>
 
       <div className="absolute inset-0 z-[3]">
-        {hasHeroSources &&
-          HERO_SOURCES.map((item, index) => {
-            const role =
-              roles.center === index
-                ? 'center'
-                : roles.left === index
-                  ? 'left'
-                  : roles.right === index
-                    ? 'right'
-                    : 'back';
-            const isCenter = role === 'center';
-            const isSide = role === 'left' || role === 'right';
+        {HERO_SOURCES.map((item, index) => {
+          const role =
+            roles.center === index
+              ? 'center'
+              : roles.left === index
+                ? 'left'
+                : roles.right === index
+                  ? 'right'
+                  : 'back';
+          const isCenter = role === 'center';
+          const isSide = role === 'left' || role === 'right';
 
           return (
             <div

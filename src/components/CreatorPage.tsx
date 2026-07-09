@@ -270,6 +270,7 @@ export function CreatorPage({
         method: 'POST',
         body: JSON.stringify({
           ...unsignedSource,
+          ownerWallet: signerAddress,
           ownershipSignature: String(signature),
         }),
       });
