@@ -267,20 +267,24 @@ export function ReceiptPage({
       let payments: Array<Record<string, unknown>> = [];
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const payer = forcedPayer ?? (await resolvePayingAccount(provider));
-        const preparedFor = payer;
+        const resolvedPayer: string = forcedPayer
+          ? forcedPayer
+          : await resolvePayingAccount(provider);
+        const payer: string = resolvedPayer;
+        const preparedFor: string = payer;
         setPaymentNotice(
           attempt === 0
             ? `Preparing payment with ${maskAddress(payer)}…`
             : `Rebuilding payment for the account that signed (${maskAddress(payer)})…`,
         );
 
-        const requirementsPayload = await requestJson<ReceiptPaymentRequirements>(
-          apiPath(`/api/receipts/${id}/payment-requirements`, {
-            access: receipt?.accessToken,
-            payer,
-          }),
-        );
+        const requirementsPayload: ReceiptPaymentRequirements =
+          await requestJson<ReceiptPaymentRequirements>(
+            apiPath(`/api/receipts/${id}/payment-requirements`, {
+              access: receipt?.accessToken,
+              payer,
+            }),
+          );
         payments = [];
         let restartWithPayer: string | null = null;
 
@@ -290,12 +294,21 @@ export function ReceiptPage({
             return;
           }
 
-          const { paymentPayloadTemplate, ...signableTypedData } = item.typedData;
-          const messageFrom = String(
-            (signableTypedData as { message?: { from?: string } }).message?.from ?? payer,
-          );
+          const { paymentPayloadTemplate, ...restTypedData } = item.typedData;
+          const signableTypedData: {
+            domain: Record<string, unknown>;
+            types: Record<string, unknown>;
+            primaryType: string;
+            message: Record<string, unknown>;
+          } = restTypedData as {
+            domain: Record<string, unknown>;
+            types: Record<string, unknown>;
+            primaryType: string;
+            message: Record<string, unknown>;
+          };
+          const messageFrom: string = String(signableTypedData.message?.from ?? payer);
           // Always sign with the address embedded in typed data (authorization.from).
-          const signAddress = messageFrom || payer;
+          const signAddress: string = messageFrom || payer;
 
           if (!sameWalletAddress(signAddress, payer)) {
             restartWithPayer = signAddress;
@@ -309,13 +322,8 @@ export function ReceiptPage({
             }),
           );
 
-          const recovered = await recoverPaymentSignatureAddress({
-            typedData: signableTypedData as {
-              domain: Record<string, unknown>;
-              types: Record<string, unknown>;
-              primaryType: string;
-              message: Record<string, unknown>;
-            },
+          const recovered: string | null = await recoverPaymentSignatureAddress({
+            typedData: signableTypedData,
             signature,
           });
 
