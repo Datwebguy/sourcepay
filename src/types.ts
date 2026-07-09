@@ -228,6 +228,7 @@ export type SafeConfig = {
   network: string;
   arcRpcUrl: boolean;
   agentWallet: string | null;
+  agentUsdcBalance?: number | null;
   contentRegistryAddress: string | null;
   faucetUrls: {
     arc: string | null;

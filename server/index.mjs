@@ -19,6 +19,8 @@ import {
   isEvmAddress,
   getAgentWalletAddress,
   generateAgentWalletPayments,
+  executeAgentOnChainPayment,
+  getAgentUsdcBalanceAtomic,
   checkTransactionSettled,
   deployContentRegistry,
   registerContentOnChain,
@@ -2633,10 +2635,10 @@ function recordPaymentAttempt(receiptId, execution) {
         stringifySettlementValue(settlement.transactionId),
         stringifySettlementValue(settlement.network),
       );
-      // Sum up actual paid amounts
-      const amount = Number(settlement.amount ?? 0);
-      if (!isNaN(amount)) {
-        actualPaidAmount += amount;
+      // Settlement amounts are USDC atomic units (6 decimals). Convert for receipt totalSpend.
+      const atomic = Number(settlement.amount ?? 0);
+      if (!isNaN(atomic) && atomic > 0) {
+        actualPaidAmount += atomic / 1_000_000;
       }
     }
 
@@ -2737,11 +2739,24 @@ async function handleRequest(request, response) {
     }
 
     if (request.method === 'GET' && url.pathname === '/api/config') {
+      let agentUsdcBalance = null;
+      try {
+        const atomic = await getAgentUsdcBalanceAtomic();
+        if (atomic !== null) {
+          agentUsdcBalance = Number(atomic) / 1_000_000;
+        }
+      } catch (error) {
+        logEvent('warn', 'config.agent_balance_failed', {
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+
       sendJson(response, 200, {
         config: {
           network: normalizeNetworkName(process.env.SOURCEPAY_NETWORK),
           arcRpcUrl: Boolean(process.env.ARC_RPC_URL || process.env.RPC),
           agentWallet: getAgentWalletAddress(),
+          agentUsdcBalance,
           contentRegistryAddress: contentRegistryAddress,
           faucetUrls: {
             arc:
@@ -3549,20 +3564,29 @@ async function handleRequest(request, response) {
         return;
       }
 
-      let payments = body.payments;
+      let execution;
       if (body.payWithAgentWallet) {
+        // Reliable path: agent signs+sends real Arc Testnet USDC transfers to creators.
+        // (Circle Gateway agent path often fails with insufficient_balance when the
+        // agent has on-chain USDC but no Gateway deposit.)
         try {
-          payments = await generateAgentWalletPayments(receipt);
+          execution = await executeAgentOnChainPayment(receipt);
         } catch (agentErr) {
+          logEvent('warn', 'payment.agent_onchain_failed', {
+            ...requestLogFields(request, url),
+            receiptId: maskIdentifier(receipt.id),
+            reason: agentErr.message,
+          });
           sendJson(response, 400, { error: agentErr.message });
           return;
         }
+      } else {
+        execution = await createPaymentExecution({
+          receipt,
+          payments: body.payments,
+        });
       }
 
-      const execution = await createPaymentExecution({
-        receipt,
-        payments,
-      });
       const attemptId = recordPaymentAttempt(receipt.id, execution);
       logEvent(execution.ok ? 'info' : 'warn', 'payment.attempt_recorded', {
         ...requestLogFields(request, url),

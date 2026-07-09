@@ -415,7 +415,11 @@ export function ReceiptPage({
 
     try {
       const response = await requestJsonWithStatus<{
-        payment?: { status: string; reason: string };
+        payment?: {
+          status: string;
+          reason: string;
+          settlements?: Array<{ transactionId?: string }>;
+        };
         receipt?: Receipt;
         error?: string;
       }>(`/api/receipts/${id}/pay`, {
@@ -429,11 +433,20 @@ export function ReceiptPage({
       if (response.payload.receipt) {
         setReceipt(response.payload.receipt);
       }
-      setPaymentNotice(
-        response.ok
-          ? 'Creators paid autonomously via Agent Wallet. This receipt is now complete.'
-          : response.payload.payment?.reason || response.payload.error || 'Payment was not completed.',
-      );
+      if (response.ok) {
+        const txCount = response.payload.payment?.settlements?.length ?? 0;
+        setPaymentNotice(
+          txCount > 0
+            ? `Paid. ${txCount} USDC transfer(s) confirmed on Arc Testnet.`
+            : 'Creators paid. This receipt is now complete.',
+        );
+      } else {
+        const reason =
+          response.payload.payment?.reason ||
+          response.payload.error ||
+          'Payment was not completed.';
+        setPaymentNotice(reason);
+      }
     } catch (requestError) {
       setPaymentNotice((requestError as Error).message);
     } finally {
@@ -649,11 +662,15 @@ export function ReceiptPage({
                           disabled={isPaying || receipt.sources.length === 0}
                           className="w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
                         >
-                          {isPaying ? 'Settling payment…' : 'Pay creators (agent wallet)'}
+                          {isPaying ? 'Sending USDC on Arc…' : 'Pay creators now'}
                         </button>
                         <p className="text-[11px] leading-relaxed text-white/45">
-                          Recommended. Settles this receipt on Arc Testnet via the funded agent wallet
-                          (x402 / Circle Gateway). No browser signature prompts.
+                          Pays creators with real Arc Testnet USDC from the SourcePay agent wallet
+                          ({maskAddress(safeConfig.agentWallet)}
+                          {typeof safeConfig.agentUsdcBalance === 'number'
+                            ? ` · ${formatUsd(safeConfig.agentUsdcBalance)} USDC`
+                            : ''}
+                          ). No MetaMask popup.
                         </p>
                         <details className="rounded-[8px] border border-white/10 bg-black/20 p-3">
                           <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-[0.12em] text-white/50 hover:text-white/75">

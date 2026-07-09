@@ -338,6 +338,163 @@ export async function generateAgentWalletPayments(receipt) {
   return payments;
 }
 
+const ERC20_ABI = [
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'transfer',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ type: 'bool' }],
+  },
+];
+
+/** Read agent wallet Arc Testnet USDC balance (atomic units, 6 decimals). */
+export async function getAgentUsdcBalanceAtomic() {
+  if (!agentAccount) return null;
+  const { publicClient } = getClients();
+  const usdc = getAddress(CHAIN_CONFIGS.arcTestnet.usdc);
+  const balance = await publicClient.readContract({
+    address: usdc,
+    abi: ERC20_ABI,
+    functionName: 'balanceOf',
+    args: [agentAccount.address],
+  });
+  return balance;
+}
+
+/**
+ * Settle a receipt by transferring Arc Testnet USDC from the agent wallet to each creator.
+ * This is the reliable agent path: real on-chain transfers, no Circle Gateway deposit required.
+ */
+export async function executeAgentOnChainPayment(receipt) {
+  if (!agentAccount) {
+    throw new Error('Agent wallet is not configured. Set AGENT_PRIVATE_KEY on the server.');
+  }
+
+  const { publicClient, walletClient } = getClients();
+  if (!walletClient) {
+    throw new Error('Agent wallet client could not be created. Check ARC_RPC_URL and AGENT_PRIVATE_KEY.');
+  }
+
+  const usdc = getAddress(CHAIN_CONFIGS.arcTestnet.usdc);
+  const sources = Array.isArray(receipt.sources) ? receipt.sources : [];
+  if (sources.length === 0) {
+    throw new Error('Receipt has no creators to pay.');
+  }
+
+  let totalAtomic = 0n;
+  for (const source of sources) {
+    totalAtomic += BigInt(usdcToAtomic(source.price));
+  }
+
+  const balance = await publicClient.readContract({
+    address: usdc,
+    abi: ERC20_ABI,
+    functionName: 'balanceOf',
+    args: [agentAccount.address],
+  });
+
+  if (balance < totalAtomic) {
+    const have = Number(balance) / 1_000_000;
+    const need = Number(totalAtomic) / 1_000_000;
+    throw new Error(
+      `Agent wallet is short on Arc Testnet USDC. Has ${have} USDC, needs ${need} USDC. ` +
+        `Fund ${agentAccount.address} on Arc Testnet (Circle faucet), then try again.`,
+    );
+  }
+
+  const settlements = [];
+  const errors = [];
+
+  for (const source of sources) {
+    try {
+      if (!isEvmAddress(source.wallet)) {
+        errors.push(`Creator wallet for "${source.title}" is invalid.`);
+        continue;
+      }
+      const amount = BigInt(usdcToAtomic(source.price));
+      if (amount <= 0n) {
+        errors.push(`Invalid payout amount for "${source.title}".`);
+        continue;
+      }
+
+      const hash = await walletClient.writeContract({
+        address: usdc,
+        abi: ERC20_ABI,
+        functionName: 'transfer',
+        args: [getAddress(source.wallet), amount],
+      });
+
+      const receiptTx = await publicClient.waitForTransactionReceipt({ hash });
+      if (receiptTx.status !== 'success') {
+        errors.push(`USDC transfer failed for "${source.title}" (tx ${hash}).`);
+        continue;
+      }
+
+      settlements.push({
+        sourceId: source.id,
+        payTo: getAddress(source.wallet),
+        payer: agentAccount.address,
+        transactionId: hash,
+        network: 'Arc Testnet',
+        amount: String(amount),
+      });
+    } catch (error) {
+      errors.push(
+        `Failed to pay "${source.title}": ${error instanceof Error ? error.message : String(error)}`.slice(
+          0,
+          220,
+        ),
+      );
+    }
+  }
+
+  const readiness = getPaymentReadiness();
+
+  if (settlements.length === 0) {
+    return {
+      ok: false,
+      status: 'payment_rejected',
+      reason:
+        errors.join(' | ') ||
+        'Agent wallet could not complete any creator payouts. Check ARC_RPC_URL and agent USDC balance.',
+      readiness,
+      settlements: [],
+      rail: 'agent-usdc',
+    };
+  }
+
+  if (errors.length > 0) {
+    return {
+      ok: false,
+      status: 'payment_rejected',
+      reason: `Partial agent payout failure: ${errors.join(' | ')}`,
+      readiness,
+      settlements,
+      rail: 'agent-usdc',
+    };
+  }
+
+  return {
+    ok: true,
+    status: 'paid',
+    reason: `Paid ${settlements.length} creator(s) with agent wallet USDC on Arc Testnet.`,
+    readiness,
+    settlements,
+    rail: 'agent-usdc',
+  };
+}
+
 
 function getNetwork() {
   return process.env.SOURCEPAY_NETWORK || 'Arc Testnet';

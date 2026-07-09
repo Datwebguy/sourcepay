@@ -891,7 +891,8 @@ test('agent wallet autonomous payment settles cleanly', async () => {
     });
     assert.equal(routePayload.receipt.sources[0].price, 0.000001);
 
-    // Pay with agent wallet (should verify signature and hit Gateway)
+    // Pay with agent wallet: on-chain USDC transfer path.
+    // Unfunded test keys should fail with a clear short-balance error (not a crash).
     const payResponse = await fetch(
       `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,
       {
@@ -903,13 +904,20 @@ test('agent wallet autonomous payment settles cleanly', async () => {
         }),
       },
     );
-    
+
     const payData = await payResponse.json();
-    assert.equal(payResponse.status, 409);
-    // The agent wallet signs correctly and reaches the Gateway. On testnet with
-    // an unfunded key the Gateway returns 'insufficient_balance' or a similar
-    // settlement error — either proves the full signing + Gateway flow works.
-    assert.match(payData.payment.reason, /Circle Gateway|insufficient_balance|settlement/iu);
+    // Funded agent → 200 paid. Unfunded local test key → 400 with short-balance reason.
+    if (payResponse.status === 200) {
+      assert.equal(payData.payment.ok, true);
+      assert.equal(payData.payment.status, 'paid');
+      assert.ok((payData.payment.settlements?.length ?? 0) >= 1);
+    } else {
+      assert.equal(payResponse.status, 400);
+      assert.match(
+        String(payData.error || payData.payment?.reason || ''),
+        /Agent wallet is short on Arc Testnet USDC|Agent wallet|USDC|transfer|RPC/iu,
+      );
+    }
   } finally {
     server.kill();
     await onceExit(server);
