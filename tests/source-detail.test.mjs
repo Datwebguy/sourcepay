@@ -571,14 +571,13 @@ test('source detail reflects real routed citation history', async () => {
       },
     );
     const paymentPayload = await paymentResponse.json();
-    assert.equal(paymentResponse.status, 409);
-    assert.equal(paymentPayload.payment.ok, false);
-    assert.equal(paymentPayload.payment.reason, 'No creator payout was submitted.');
-    assert.equal(paymentPayload.receipt.paymentStatus, 'settlement_setup');
-    assert.equal(paymentPayload.receipt.totalSpend, 1);
-    assert.equal(paymentPayload.receipt.paymentAttempts.length, 1);
-    assert.equal(paymentPayload.receipt.paymentAttempts[0].reason, 'No creator payout was submitted.');
-    assert.deepEqual(paymentPayload.receipt.paymentSettlements, []);
+    // Empty payments rejected before settlement attempt (buyer must send USDC txs or x402 payload).
+    assert.equal(paymentResponse.status, 400);
+    assert.match(
+      String(paymentPayload.error || ''),
+      /Pay with your connected wallet|payment payload/iu,
+    );
+    assert.equal(paymentPayload.receipt?.paymentStatus ?? 'quoted', 'quoted');
 
     const unknownSourcePaymentResponse = await fetch(
       `${baseUrl}/api/receipts/${routePayload.receipt.id}/pay`,

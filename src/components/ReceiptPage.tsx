@@ -21,14 +21,10 @@ import {
   formatUsdcAtomic,
   getEthereumProvider,
   resolvePayingAccount,
-  listProviderAccounts,
-  sameWalletAddress,
-  recoverPaymentSignatureAddress,
-  signPaymentTypedData,
-  normalizeEvmAddress,
-  formatAddressList,
   ensureArcNetwork,
   readUsdcBalance,
+  sendUsdcTransfer,
+  waitForTransaction,
   requestJson,
   requestJsonWithStatus,
   receiptDisplayUrl,
@@ -244,154 +240,82 @@ export function ReceiptPage({
     };
   }, [id, receipt?.paymentStatus, receipt?.accessToken, initialAccessToken]);
 
+  /**
+   * Primary product path: buyer pays each creator with real Arc Testnet USDC
+   * from the buyer's connected wallet (eth_sendTransaction ERC-20 transfer).
+   */
   const attemptPayment = async () => {
     setIsPaying(true);
     setPaymentNotice('');
 
     try {
+      if (!receipt) {
+        throw new Error('Receipt is still loading.');
+      }
       if (!connectedWallet.address) {
         const connected = await onConnectWallet();
         if (!connected) {
-          setPaymentNotice('Connect your wallet before settling this receipt.');
+          setPaymentNotice('Connect the buyer wallet that will pay USDC for this receipt.');
           return;
         }
       }
+
       const provider = getEthereumProvider();
       if (!provider) {
-        setPaymentNotice('A browser wallet is required to settle this receipt.');
+        setPaymentNotice('A browser wallet is required for the buyer to pay.');
         return;
       }
+
       await ensureArcNetwork(provider);
+      const payer = await resolvePayingAccount(provider, connectedWallet.address);
+      const usdcAddress =
+        safeConfig?.walletNetwork?.usdcAddress || '0x3600000000000000000000000000000000000000';
 
-      // Prefer the wallet the app already shows as connected (and has balance for).
-      // Only fall back to eth_accounts[0] when the connected address is not authorized.
-      const preferred = connectedWallet.address;
-      let payer: string = await resolvePayingAccount(provider, preferred);
-      const authorizedAccounts = await listProviderAccounts(provider);
-
-      setPaymentNotice(
-        `Preparing payment with ${maskAddress(payer)}` +
-          (authorizedAccounts.length > 1
-            ? ` (wallet has ${authorizedAccounts.length} accounts: ${formatAddressList(authorizedAccounts)})`
-            : '') +
-          '…',
-      );
-
-      // Single prepare+sign path. If the recovered signer differs, only auto-retry when
-      // that recovered address is actually authorized in the extension — never invent
-      // a non-existent account for the user to "select".
-      let payments: Array<Record<string, unknown>> = [];
-      let attemptPayer = payer;
-
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        payer = attemptPayer;
-        setPaymentNotice(`Preparing payment with ${maskAddress(payer)}…`);
-
-        const requirementsPayload: ReceiptPaymentRequirements =
-          await requestJson<ReceiptPaymentRequirements>(
-            apiPath(`/api/receipts/${id}/payment-requirements`, {
-              access: receipt?.accessToken,
-              payer,
-            }),
-          );
-
-        if (!requirementsPayload.requirements?.length) {
-          throw new Error('No payment requirements were returned for this receipt.');
-        }
-
-        payments = [];
-        let recoveredMismatch: string | null = null;
-
-        for (const item of requirementsPayload.requirements) {
-          if (!item.typedData || typeof item.typedData !== 'object') {
-            throw new Error(
-              'This receipt could not be prepared for payment (missing signing data). Refresh and try again.',
-            );
-          }
-
-          const { paymentPayloadTemplate, ...restTypedData } = item.typedData as Record<
-            string,
-            unknown
-          > & { paymentPayloadTemplate?: Record<string, unknown> };
-
-          // Force message.from = payer inside signPaymentTypedData (server echo is ignored).
-          const { signature, typedData: signedTypedData, signAddress } =
-            await signPaymentTypedData(provider, payer, restTypedData as Record<string, unknown>);
-
-          const recovered: string | null = await recoverPaymentSignatureAddress({
-            typedData: signedTypedData,
-            signature,
-          });
-
-          if (recovered && !sameWalletAddress(recovered, signAddress)) {
-            recoveredMismatch = recovered;
-            break;
-          }
-
-          const signedAuthorization = signedTypedData.message;
-          const templatePayload =
-            paymentPayloadTemplate && typeof paymentPayloadTemplate === 'object'
-              ? paymentPayloadTemplate
-              : null;
-          const templateInnerPayload =
-            templatePayload?.payload && typeof templatePayload.payload === 'object'
-              ? (templatePayload.payload as Record<string, unknown>)
-              : {};
-
-          payments.push({
-            sourceId: item.sourceId,
-            paymentPayload: templatePayload
-              ? {
-                  ...templatePayload,
-                  payload: {
-                    ...templateInnerPayload,
-                    authorization: signedAuthorization,
-                    signature,
-                  },
-                }
-              : undefined,
-            authorization: templatePayload ? undefined : signedAuthorization,
-            signature: templatePayload ? undefined : signature,
-          });
-        }
-
-        if (recoveredMismatch) {
-          const authorizedNow = await listProviderAccounts(provider);
-          const recoveredIsAuthorized = authorizedNow.some((account) =>
-            sameWalletAddress(account, recoveredMismatch),
-          );
-
-          if (attempt === 0 && recoveredIsAuthorized) {
-            setPaymentNotice(
-              `Wallet signed with ${maskAddress(recoveredMismatch)} instead of ${maskAddress(payer)}. Rebuilding for that authorized account — approve again…`,
-            );
-            attemptPayer = await normalizeEvmAddress(recoveredMismatch, 'Recovered signer');
-            continue;
-          }
-
-          throw new Error(
-            `Wallet produced a signature from ${maskAddress(recoveredMismatch)}, which is not the paying account ${maskAddress(payer)}. ` +
-              `Authorized accounts: ${formatAddressList(authorizedNow)}. ` +
-              `In your wallet extension, select ${maskAddress(payer)} as the active account (the one SourcePay connected), then try Approve & Pay again.`,
-          );
-        }
-
-        break;
+      if (walletBalanceCheck.enough === false) {
+        throw new Error(
+          `Buyer wallet ${maskAddress(payer)} does not have enough Arc Testnet USDC for this quote (${formatUsd(receipt.totalSpend)} USDC). Fund it from the Circle faucet, then try again.`,
+        );
       }
 
-      if (payments.length === 0) {
-        setPaymentNotice('No payment approvals were created. Try Approve & Pay again.');
-        return;
+      const settlements: Array<{ sourceId: string; transactionId: string }> = [];
+      const sources = receipt.sources;
+
+      for (let index = 0; index < sources.length; index += 1) {
+        const source = sources[index];
+        setPaymentNotice(
+          `Buyer paying creator ${index + 1}/${sources.length}: ${source.title.slice(0, 48)}… Confirm in your wallet.`,
+        );
+
+        const txHash = await sendUsdcTransfer({
+          provider,
+          from: payer,
+          to: source.wallet,
+          amountUsdc: source.price,
+          usdcAddress,
+        });
+
+        setPaymentNotice(`Waiting for transfer ${index + 1}/${sources.length} to confirm…`);
+        await waitForTransaction(provider, txHash);
+        settlements.push({ sourceId: source.id, transactionId: txHash });
       }
 
-      setPaymentNotice('Submitting signed payment…');
+      setPaymentNotice('Verifying on-chain payments…');
       const response = await requestJsonWithStatus<{
-        payment?: { status: string; reason: string };
+        payment?: {
+          status: string;
+          reason: string;
+          settlements?: Array<{ transactionId?: string }>;
+        };
         receipt?: Receipt;
         error?: string;
       }>(`/api/receipts/${id}/pay`, {
         method: 'POST',
-        body: JSON.stringify({ ...receiptAccessBody(receipt), payments }),
+        body: JSON.stringify({
+          ...receiptAccessBody(receipt),
+          settlementMode: 'buyer-usdc',
+          buyerWallet: payer,
+          settlements,
+        }),
       });
 
       if (response.payload.receipt) {
@@ -399,8 +323,10 @@ export function ReceiptPage({
       }
       setPaymentNotice(
         response.ok
-          ? 'Creators paid. This receipt is now complete.'
-          : response.payload.payment?.reason || response.payload.error || 'Payment was not completed.',
+          ? `Paid from your wallet. ${settlements.length} USDC transfer(s) confirmed on Arc Testnet.`
+          : response.payload.payment?.reason ||
+              response.payload.error ||
+              'Payment verification failed.',
       );
     } catch (requestError) {
       setPaymentNotice((requestError as Error).message);
@@ -409,6 +335,7 @@ export function ReceiptPage({
     }
   };
 
+  /** Optional: autonomous server/bot agent pays with the platform AGENT_PRIVATE_KEY. */
   const attemptAgentPayment = async () => {
     setIsPaying(true);
     setPaymentNotice('');
@@ -437,15 +364,15 @@ export function ReceiptPage({
         const txCount = response.payload.payment?.settlements?.length ?? 0;
         setPaymentNotice(
           txCount > 0
-            ? `Paid. ${txCount} USDC transfer(s) confirmed on Arc Testnet.`
-            : 'Creators paid. This receipt is now complete.',
+            ? `Agent bot paid. ${txCount} USDC transfer(s) on Arc Testnet.`
+            : 'Agent bot payment complete.',
         );
       } else {
-        const reason =
+        setPaymentNotice(
           response.payload.payment?.reason ||
-          response.payload.error ||
-          'Payment was not completed.';
-        setPaymentNotice(reason);
+            response.payload.error ||
+            'Agent payment was not completed.',
+        );
       }
     } catch (requestError) {
       setPaymentNotice((requestError as Error).message);
@@ -654,95 +581,66 @@ export function ReceiptPage({
 
                 {!isPaidOrSettled && (
                   <div className="space-y-3">
-                    {safeConfig?.agentWallet ? (
-                      <>
+                    <button
+                      type="button"
+                      onClick={attemptPayment}
+                      disabled={isPaying || receipt.sources.length === 0}
+                      className="w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
+                    >
+                      {isPaying ? 'Paying creators…' : 'Pay with your wallet'}
+                    </button>
+                    <p className="text-[11px] leading-relaxed text-white/45">
+                      You are the buyer. SourcePay sends real Arc Testnet USDC from{' '}
+                      <span className="font-semibold text-white/70">your connected wallet</span> to
+                      each cited creator. Confirm each transfer in MetaMask/OKX.
+                    </p>
+                    {connectedWallet.address ? (
+                      <p
+                        className={`rounded-[8px] border px-3 py-2 text-xs font-semibold leading-relaxed ${
+                          walletBalanceCheck.enough === false
+                            ? 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
+                            : walletBalanceCheck.enough === true
+                              ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
+                              : 'border-white/10 bg-white/[0.035] text-white/45'
+                        }`}
+                      >
+                        {walletBalanceCheck.checking
+                          ? 'Checking your Arc Testnet USDC balance…'
+                          : walletBalanceCheck.enough === false
+                            ? `Buyer ${maskAddress(connectedWallet.address)} needs at least ${formatUsd(receipt.totalSpend)} USDC. Use the Circle faucet, then retry.`
+                            : walletBalanceCheck.enough === true
+                              ? `Buyer ${maskAddress(connectedWallet.address)} has enough USDC for this receipt.`
+                              : walletBalanceCheck.error ||
+                                'Connect a wallet with Arc Testnet USDC to pay.'}
+                      </p>
+                    ) : (
+                      <p className="rounded-[8px] border border-white/10 bg-white/[0.035] px-3 py-2 text-xs font-semibold text-white/50">
+                        Connect the buyer wallet that will pay, then click Pay with your wallet.
+                      </p>
+                    )}
+
+                    {safeConfig?.agentWallet && (
+                      <details className="rounded-[8px] border border-white/10 bg-black/20 p-3">
+                        <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-[0.12em] text-white/45 hover:text-white/70">
+                          Optional: AI agent / bot pays (server key)
+                        </summary>
+                        <p className="mt-2 text-[11px] leading-relaxed text-white/40">
+                          Not for normal buyers. Uses SourcePay&apos;s server agent key (
+                          {maskAddress(safeConfig.agentWallet)}
+                          {typeof safeConfig.agentUsdcBalance === 'number'
+                            ? ` · ${formatUsd(safeConfig.agentUsdcBalance)} USDC`
+                            : ''}
+                          ) when an autonomous agent settles citations via API.
+                        </p>
                         <button
                           type="button"
                           onClick={attemptAgentPayment}
                           disabled={isPaying || receipt.sources.length === 0}
-                          className="w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
+                          className="mt-3 w-full rounded-[8px] border border-white/14 bg-white/[0.04] px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
                         >
-                          {isPaying ? 'Sending USDC on Arc…' : 'Pay creators now'}
+                          {isPaying ? 'Agent paying…' : 'Pay via agent bot'}
                         </button>
-                        <p className="text-[11px] leading-relaxed text-white/45">
-                          Pays creators with real Arc Testnet USDC from the SourcePay agent wallet
-                          ({maskAddress(safeConfig.agentWallet)}
-                          {typeof safeConfig.agentUsdcBalance === 'number'
-                            ? ` · ${formatUsd(safeConfig.agentUsdcBalance)} USDC`
-                            : ''}
-                          ). No MetaMask popup.
-                        </p>
-                        <details className="rounded-[8px] border border-white/10 bg-black/20 p-3">
-                          <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-[0.12em] text-white/50 hover:text-white/75">
-                            Advanced: pay with browser wallet
-                          </summary>
-                          <p className="mt-2 text-[11px] leading-relaxed text-white/40">
-                            Uses MetaMask/OKX EIP-712 signing. Can fail if multiple accounts are
-                            connected — prefer agent wallet for demos.
-                          </p>
-                          <button
-                            type="button"
-                            onClick={attemptPayment}
-                            disabled={isPaying || receipt.sources.length === 0}
-                            className="mt-3 w-full rounded-[8px] border border-white/14 bg-white/[0.04] px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
-                          >
-                            {isPaying ? 'Processing…' : 'Approve & Pay with wallet'}
-                          </button>
-                          {connectedWallet.address && (
-                            <p
-                              className={`mt-2 rounded-[8px] border px-3 py-2 text-[11px] font-semibold leading-relaxed ${
-                                walletBalanceCheck.enough === false
-                                  ? 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
-                                  : walletBalanceCheck.enough === true
-                                    ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
-                                    : 'border-white/10 bg-white/[0.035] text-white/45'
-                              }`}
-                            >
-                              {walletBalanceCheck.checking
-                                ? 'Checking wallet USDC…'
-                                : walletBalanceCheck.enough === false
-                                  ? `${maskAddress(connectedWallet.address)} is short on USDC.`
-                                  : walletBalanceCheck.enough === true
-                                    ? `${maskAddress(connectedWallet.address)} has enough USDC.`
-                                    : walletBalanceCheck.error || 'Balance unavailable.'}
-                            </p>
-                          )}
-                        </details>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          onClick={attemptPayment}
-                          disabled={isPaying || receipt.sources.length === 0}
-                          className="w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
-                        >
-                          {isPaying ? 'Processing payment…' : 'Approve & Pay receipt'}
-                        </button>
-                        <p className="text-[11px] leading-relaxed text-white/45">
-                          Agent wallet is not configured on this deployment. Connect a browser wallet
-                          with Arc Testnet USDC to settle.
-                        </p>
-                        {connectedWallet.address && (
-                          <p
-                            className={`rounded-[8px] border px-3 py-2 text-xs font-semibold leading-relaxed ${
-                              walletBalanceCheck.enough === false
-                                ? 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
-                                : walletBalanceCheck.enough === true
-                                  ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
-                                  : 'border-white/10 bg-white/[0.035] text-white/45'
-                            }`}
-                          >
-                            {walletBalanceCheck.checking
-                              ? 'Checking wallet USDC balance…'
-                              : walletBalanceCheck.enough === false
-                                ? `Connected wallet ${maskAddress(connectedWallet.address)} USDC is below the quote.`
-                                : walletBalanceCheck.enough === true
-                                  ? `Connected wallet ${maskAddress(connectedWallet.address)} has enough USDC.`
-                                  : walletBalanceCheck.error || 'Wallet USDC balance could not be checked.'}
-                          </p>
-                        )}
-                      </>
+                      </details>
                     )}
                   </div>
                 )}

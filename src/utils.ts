@@ -53,6 +53,78 @@ export function encodeBalanceOf(address: string) {
   return `0x70a08231${address.toLowerCase().replace(/^0x/u, '').padStart(64, '0')}`;
 }
 
+/** ERC-20 transfer(address,uint256) calldata for Arc Testnet USDC (6 decimals). */
+export function encodeUsdcTransfer(to: string, amountAtomic: bigint) {
+  const toWord = to.toLowerCase().replace(/^0x/u, '').padStart(64, '0');
+  const amountWord = amountAtomic.toString(16).padStart(64, '0');
+  return `0xa9059cbb${toWord}${amountWord}`;
+}
+
+export function usdcToAtomicBigInt(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return 0n;
+  return BigInt(Math.round(value * 1_000_000));
+}
+
+/**
+ * Buyer pays one creator with a real Arc Testnet USDC transfer from their wallet.
+ * Returns the transaction hash.
+ */
+export async function sendUsdcTransfer(params: {
+  provider: EthereumProvider;
+  from: string;
+  to: string;
+  amountUsdc: number;
+  usdcAddress: string;
+}) {
+  const from = await normalizeEvmAddress(params.from, 'Buyer wallet');
+  const to = await normalizeEvmAddress(params.to, 'Creator wallet');
+  const usdc = await normalizeEvmAddress(params.usdcAddress, 'USDC contract');
+  const amount = usdcToAtomicBigInt(params.amountUsdc);
+  if (amount <= 0n) {
+    throw new Error('Citation amount must be greater than zero.');
+  }
+
+  const data = encodeUsdcTransfer(to, amount);
+  const txHash = String(
+    await params.provider.request({
+      method: 'eth_sendTransaction',
+      params: [
+        {
+          from: from.toLowerCase(),
+          to: usdc.toLowerCase(),
+          data,
+          value: '0x0',
+        },
+      ],
+    }),
+  );
+
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    throw new Error('Wallet did not return a valid transaction hash.');
+  }
+  return txHash;
+}
+
+/** Wait until a transaction is mined (success or failure). */
+export async function waitForTransaction(provider: EthereumProvider, txHash: string, timeoutMs = 90_000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const receipt = (await provider.request({
+      method: 'eth_getTransactionReceipt',
+      params: [txHash],
+    })) as { status?: string } | null;
+    if (receipt?.status) {
+      const ok = receipt.status === '0x1' || Number(receipt.status) === 1;
+      if (!ok) {
+        throw new Error(`Transaction ${txHash.slice(0, 10)}… failed on-chain.`);
+      }
+      return receipt;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  throw new Error('Timed out waiting for USDC transfer confirmation.');
+}
+
 export function formatUsdcAtomic(value: bigint | null) {
   if (value === null) return '--';
   const units = value / 1_000_000n;

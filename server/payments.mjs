@@ -373,8 +373,129 @@ export async function getAgentUsdcBalanceAtomic() {
 }
 
 /**
+ * Verify buyer-submitted on-chain USDC transfers and build a payment execution result.
+ * Each settlement must be a successful ERC-20 transfer of the exact citation amount
+ * from the buyer to the creator on Arc Testnet.
+ */
+export async function verifyBuyerOnChainSettlements(receipt, settlements, buyerWallet) {
+  if (!isEvmAddress(buyerWallet)) {
+    throw new Error('Buyer wallet must be a valid Ethereum address.');
+  }
+  if (!Array.isArray(settlements) || settlements.length === 0) {
+    throw new Error('No on-chain payment transactions were submitted.');
+  }
+
+  const sources = Array.isArray(receipt.sources) ? receipt.sources : [];
+  if (sources.length === 0) {
+    throw new Error('Receipt has no creators to pay.');
+  }
+
+  const bySource = new Map(
+    settlements
+      .filter((row) => row && typeof row === 'object')
+      .map((row) => [String(row.sourceId ?? ''), row]),
+  );
+
+  const { publicClient } = getClients();
+  const usdc = getAddress(CHAIN_CONFIGS.arcTestnet.usdc).toLowerCase();
+  const buyer = getAddress(buyerWallet).toLowerCase();
+  const transferTopic =
+    '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
+  const readiness = getPaymentReadiness();
+  const verified = [];
+  const errors = [];
+
+  for (const source of sources) {
+    const submitted = bySource.get(source.id);
+    if (!submitted?.transactionId) {
+      errors.push(`Missing USDC transfer for "${source.title}".`);
+      continue;
+    }
+
+    const txHash = String(submitted.transactionId).trim();
+    if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+      errors.push(`Invalid transaction hash for "${source.title}".`);
+      continue;
+    }
+
+    try {
+      const txReceipt = await publicClient.getTransactionReceipt({ hash: txHash });
+      if (!txReceipt || txReceipt.status !== 'success') {
+        errors.push(`Transfer for "${source.title}" is not a successful on-chain transaction.`);
+        continue;
+      }
+
+      const expectedTo = getAddress(source.wallet).toLowerCase();
+      const expectedAmount = BigInt(usdcToAtomic(source.price));
+      const buyerTopic = `0x${buyer.slice(2).padStart(64, '0')}`;
+      const toTopic = `0x${expectedTo.slice(2).padStart(64, '0')}`;
+
+      const transferLog = (txReceipt.logs || []).find((log) => {
+        const topics = log.topics || [];
+        return (
+          String(log.address).toLowerCase() === usdc &&
+          topics[0]?.toLowerCase() === transferTopic &&
+          topics[1]?.toLowerCase() === buyerTopic &&
+          topics[2]?.toLowerCase() === toTopic
+        );
+      });
+
+      if (!transferLog) {
+        errors.push(
+          `Transaction for "${source.title}" is not a USDC transfer from ${maskPaymentAddress(buyer)} to the creator.`,
+        );
+        continue;
+      }
+
+      const amount = BigInt(transferLog.data || '0x0');
+      if (amount !== expectedAmount) {
+        errors.push(
+          `USDC amount for "${source.title}" is wrong (got ${amount}, expected ${expectedAmount}).`,
+        );
+        continue;
+      }
+
+      verified.push({
+        sourceId: source.id,
+        payTo: getAddress(source.wallet),
+        payer: getAddress(buyerWallet),
+        transactionId: txHash,
+        network: 'Arc Testnet',
+        amount: String(expectedAmount),
+      });
+    } catch (error) {
+      errors.push(
+        `Could not verify transfer for "${source.title}": ${
+          error instanceof Error ? error.message : String(error)
+        }`.slice(0, 220),
+      );
+    }
+  }
+
+  if (verified.length !== sources.length) {
+    return {
+      ok: false,
+      status: 'payment_rejected',
+      reason: errors.join(' | ') || 'On-chain buyer payments could not be verified.',
+      readiness,
+      settlements: verified,
+      rail: 'buyer-usdc',
+    };
+  }
+
+  return {
+    ok: true,
+    status: 'paid',
+    reason: `Buyer paid ${verified.length} creator(s) with Arc Testnet USDC.`,
+    readiness,
+    settlements: verified,
+    rail: 'buyer-usdc',
+  };
+}
+
+/**
  * Settle a receipt by transferring Arc Testnet USDC from the agent wallet to each creator.
- * This is the reliable agent path: real on-chain transfers, no Circle Gateway deposit required.
+ * Optional bot/API path only — not the primary buyer UX.
  */
 export async function executeAgentOnChainPayment(receipt) {
   if (!agentAccount) {

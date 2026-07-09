@@ -20,6 +20,7 @@ import {
   getAgentWalletAddress,
   generateAgentWalletPayments,
   executeAgentOnChainPayment,
+  verifyBuyerOnChainSettlements,
   getAgentUsdcBalanceAtomic,
   checkTransactionSettled,
   deployContentRegistry,
@@ -3566,9 +3567,7 @@ async function handleRequest(request, response) {
 
       let execution;
       if (body.payWithAgentWallet) {
-        // Reliable path: agent signs+sends real Arc Testnet USDC transfers to creators.
-        // (Circle Gateway agent path often fails with insufficient_balance when the
-        // agent has on-chain USDC but no Gateway deposit.)
+        // Optional bot/API path: server key pays creators with real on-chain USDC.
         try {
           execution = await executeAgentOnChainPayment(receipt);
         } catch (agentErr) {
@@ -3580,11 +3579,36 @@ async function handleRequest(request, response) {
           sendJson(response, 400, { error: agentErr.message });
           return;
         }
-      } else {
+      } else if (body.settlementMode === 'buyer-usdc' || Array.isArray(body.settlements)) {
+        // Primary product path: buyer paid creators with their own Arc Testnet USDC.
+        try {
+          const buyerWallet = String(body.buyerWallet ?? body.payer ?? '').trim();
+          execution = await verifyBuyerOnChainSettlements(
+            receipt,
+            body.settlements,
+            buyerWallet,
+          );
+        } catch (buyerErr) {
+          logEvent('warn', 'payment.buyer_onchain_failed', {
+            ...requestLogFields(request, url),
+            receiptId: maskIdentifier(receipt.id),
+            reason: buyerErr.message,
+          });
+          sendJson(response, 400, { error: buyerErr.message });
+          return;
+        }
+      } else if (Array.isArray(body.payments) && body.payments.length > 0) {
+        // Optional x402 / Circle Gateway path when browser signed TransferWithAuthorization.
         execution = await createPaymentExecution({
           receipt,
           payments: body.payments,
         });
+      } else {
+        sendJson(response, 400, {
+          error:
+            'Pay with your connected wallet (buyer USDC transfers) or submit a valid payment payload.',
+        });
+        return;
       }
 
       const attemptId = recordPaymentAttempt(receipt.id, execution);
