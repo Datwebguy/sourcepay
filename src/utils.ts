@@ -129,6 +129,72 @@ export async function getActiveProviderAccount(provider: EthereumProvider) {
   return account || null;
 }
 
+/**
+ * Resolve the wallet account that will actually pay/sign.
+ * Always re-requests accounts so MetaMask/WalletConnect use the currently selected account,
+ * not a stale app connection address.
+ */
+export async function resolvePayingAccount(provider: EthereumProvider): Promise<string> {
+  let accounts: unknown = [];
+  try {
+    accounts = await provider.request({ method: 'eth_requestAccounts' });
+  } catch {
+    accounts = await provider.request({ method: 'eth_accounts' }).catch(() => []);
+  }
+
+  const list = Array.isArray(accounts)
+    ? accounts.map((value) => String(value ?? '').trim()).filter(Boolean)
+    : [];
+  if (list.length === 0) {
+    throw new Error('No wallet account is selected. Open your wallet, choose the paying account, and try again.');
+  }
+
+  // Checksum when possible so eth_signTypedData_v4 matches the wallet's selected key.
+  try {
+    const { getAddress } = await import('viem');
+    return getAddress(list[0]);
+  } catch {
+    return list[0];
+  }
+}
+
+export function sameWalletAddress(left: string | null | undefined, right: string | null | undefined) {
+  return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
+}
+
+/** Recover EIP-712 TransferWithAuthorization signer to catch wallet account mismatches early. */
+export async function recoverPaymentSignatureAddress(params: {
+  typedData: {
+    domain: Record<string, unknown>;
+    types: Record<string, unknown>;
+    primaryType: string;
+    message: Record<string, unknown>;
+  };
+  signature: string;
+}): Promise<string | null> {
+  try {
+    const { recoverTypedDataAddress, getAddress } = await import('viem');
+    const message = params.typedData.message;
+    const recovered = await recoverTypedDataAddress({
+      domain: params.typedData.domain as any,
+      types: params.typedData.types as any,
+      primaryType: params.typedData.primaryType as any,
+      message: {
+        from: getAddress(String(message.from)),
+        to: getAddress(String(message.to)),
+        value: BigInt(String(message.value)),
+        validAfter: BigInt(String(message.validAfter)),
+        validBefore: BigInt(String(message.validBefore)),
+        nonce: message.nonce as `0x${string}`,
+      },
+      signature: params.signature as `0x${string}`,
+    });
+    return getAddress(recovered);
+  } catch {
+    return null;
+  }
+}
+
 export function clearWalletProviderEvents() {
   activeWalletProviderCleanup?.();
   activeWalletProviderCleanup = null;

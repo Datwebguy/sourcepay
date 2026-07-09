@@ -20,7 +20,9 @@ import {
   maskAddress,
   formatUsdcAtomic,
   getEthereumProvider,
-  getActiveProviderAccount,
+  resolvePayingAccount,
+  sameWalletAddress,
+  recoverPaymentSignatureAddress,
   ensureArcNetwork,
   readUsdcBalance,
   requestJson,
@@ -161,13 +163,17 @@ export function ReceiptPage({
       error: '',
     }));
 
-    ensureArcNetwork(provider)
-      .then(() =>
-        readUsdcBalance({
-          provider,
-          receipt: receipt as Receipt,
-          wallet: connectedWallet.address as string,
-        }),
+    // Prefer the wallet's currently selected account for balance (matches signing).
+    resolvePayingAccount(provider)
+      .catch(() => connectedWallet.address as string)
+      .then((activeWallet) =>
+        ensureArcNetwork(provider).then(() =>
+          readUsdcBalance({
+            provider,
+            receipt: receipt as Receipt,
+            wallet: activeWallet,
+          }),
+        ),
       )
       .then((result) => {
         if (ignore) return;
@@ -240,13 +246,12 @@ export function ReceiptPage({
     setPaymentNotice('');
 
     try {
-      let payer = connectedWallet.address;
-      if (!payer) {
-        payer = await onConnectWallet();
-      }
-      if (!payer) {
-        setPaymentNotice('Connect your wallet before settling this receipt.');
-        return;
+      if (!connectedWallet.address) {
+        const connected = await onConnectWallet();
+        if (!connected) {
+          setPaymentNotice('Connect your wallet before settling this receipt.');
+          return;
+        }
       }
       const provider = getEthereumProvider();
       if (!provider) {
@@ -254,62 +259,125 @@ export function ReceiptPage({
         return;
       }
       await ensureArcNetwork(provider);
-      const activePayer = await getActiveProviderAccount(provider);
-      if (!activePayer) {
-        setPaymentNotice('Select the paying wallet account before settling this receipt.');
-        return;
-      }
-      payer = activePayer;
 
-      const requirementsPayload = await requestJson<ReceiptPaymentRequirements>(
-        apiPath(`/api/receipts/${id}/payment-requirements`, {
-          access: receipt?.accessToken,
-          payer,
-        }),
-      );
-      const payments = [];
+      // Up to 2 attempts: if the wallet signs with a different selected account than
+      // eth_accounts reported, rebuild payment requirements for the true signer and retry.
+      let payer = await resolvePayingAccount(provider);
+      let payments: Array<Record<string, unknown>> = [];
+      let preparedFor = payer;
 
-      for (const item of requirementsPayload.requirements) {
-        if (!item.typedData) {
-          setPaymentNotice('This receipt could not be prepared for payment.');
-          return;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        payer = await resolvePayingAccount(provider);
+        preparedFor = payer;
+        setPaymentNotice(`Preparing payment with ${maskAddress(payer)}…`);
+
+        const requirementsPayload = await requestJson<ReceiptPaymentRequirements>(
+          apiPath(`/api/receipts/${id}/payment-requirements`, {
+            access: receipt?.accessToken,
+            payer,
+          }),
+        );
+        payments = [];
+        let restartWithPayer: string | null = null;
+
+        for (const item of requirementsPayload.requirements) {
+          if (!item.typedData) {
+            setPaymentNotice('This receipt could not be prepared for payment.');
+            return;
+          }
+
+          // Re-read active account immediately before each signature prompt.
+          const activeBeforeSign = await resolvePayingAccount(provider);
+          if (!sameWalletAddress(activeBeforeSign, payer)) {
+            restartWithPayer = activeBeforeSign;
+            break;
+          }
+
+          const { paymentPayloadTemplate, ...signableTypedData } = item.typedData;
+          const expectedFrom = String(
+            (signableTypedData as { message?: { from?: string } }).message?.from ?? payer,
+          );
+          if (!sameWalletAddress(expectedFrom, payer)) {
+            restartWithPayer = expectedFrom;
+            break;
+          }
+
+          const signature = String(
+            await provider.request({
+              method: 'eth_signTypedData_v4',
+              params: [payer, JSON.stringify(signableTypedData)],
+            }),
+          );
+
+          const recovered = await recoverPaymentSignatureAddress({
+            typedData: signableTypedData as {
+              domain: Record<string, unknown>;
+              types: Record<string, unknown>;
+              primaryType: string;
+              message: Record<string, unknown>;
+            },
+            signature,
+          });
+
+          if (recovered && !sameWalletAddress(recovered, payer)) {
+            // Wallet signed with a different account than the typed-data `from`.
+            // Rebuild requirements for the actual signer and retry once.
+            restartWithPayer = recovered;
+            break;
+          }
+
+          const templatePayload =
+            paymentPayloadTemplate && typeof paymentPayloadTemplate === 'object'
+              ? paymentPayloadTemplate
+              : null;
+          const templateInnerPayload =
+            templatePayload?.payload && typeof templatePayload.payload === 'object'
+              ? (templatePayload.payload as Record<string, unknown>)
+              : {};
+          const templateAuthorization =
+            templateInnerPayload.authorization && typeof templateInnerPayload.authorization === 'object'
+              ? (templateInnerPayload.authorization as Record<string, unknown>)
+              : item.typedData.message;
+
+          payments.push({
+            sourceId: item.sourceId,
+            paymentPayload: templatePayload
+              ? {
+                  ...templatePayload,
+                  payload: {
+                    ...templateInnerPayload,
+                    authorization: templateAuthorization,
+                    signature,
+                  },
+                }
+              : undefined,
+            authorization: templatePayload ? undefined : item.typedData.message,
+            signature: templatePayload ? undefined : signature,
+          });
         }
 
-        const { paymentPayloadTemplate, ...signableTypedData } = item.typedData;
-        const signature = await provider.request({
-          method: 'eth_signTypedData_v4',
-          params: [payer, JSON.stringify(signableTypedData)],
-        });
-        const templatePayload =
-          paymentPayloadTemplate && typeof paymentPayloadTemplate === 'object'
-            ? paymentPayloadTemplate
-            : null;
-        const templateInnerPayload =
-          templatePayload?.payload && typeof templatePayload.payload === 'object'
-            ? (templatePayload.payload as Record<string, unknown>)
-            : {};
-        const templateAuthorization =
-          templateInnerPayload.authorization && typeof templateInnerPayload.authorization === 'object'
-            ? (templateInnerPayload.authorization as Record<string, unknown>)
-            : item.typedData.message;
+        if (restartWithPayer) {
+          if (attempt === 0) {
+            setPaymentNotice(
+              `Wallet signed with ${maskAddress(restartWithPayer)} instead of ${maskAddress(preparedFor)}. Rebuilding payment for the selected account…`,
+            );
+            payer = restartWithPayer;
+            continue;
+          }
+          throw new Error(
+            `Payment signature was produced by ${maskAddress(restartWithPayer)}, but this receipt was prepared for ${maskAddress(preparedFor)}. In your wallet, select ${maskAddress(restartWithPayer)} as the active account and try Approve & Pay again.`,
+          );
+        }
 
-        payments.push({
-          sourceId: item.sourceId,
-          paymentPayload: templatePayload
-            ? {
-                ...templatePayload,
-                payload: {
-                  ...templateInnerPayload,
-                  authorization: templateAuthorization,
-                  signature: String(signature),
-                },
-              }
-            : undefined,
-          authorization: templatePayload ? undefined : item.typedData.message,
-          signature: templatePayload ? undefined : String(signature),
-        });
+        break;
       }
 
+      if (payments.length === 0) {
+        setPaymentNotice('No payment approvals were created. Try Approve & Pay again.');
+        return;
+      }
+
+      setPaymentNotice('Submitting signed payment…');
       const response = await requestJsonWithStatus<{
         payment?: { status: string; reason: string };
         receipt?: Receipt;
@@ -601,9 +669,9 @@ export function ReceiptPage({
                     {walletBalanceCheck.checking
                       ? 'Checking wallet USDC balance...'
                       : walletBalanceCheck.enough === false
-                        ? 'Wallet USDC is below the quote. Payment can still proceed if Circle Gateway balance is funded.'
+                        ? `Active wallet ${maskAddress(connectedWallet.address)} USDC is below the quote. Switch the selected account in your wallet if needed.`
                         : walletBalanceCheck.enough === true
-                          ? 'Wallet has enough USDC for this receipt.'
+                          ? `Wallet ${maskAddress(connectedWallet.address)} has enough USDC for this receipt.`
                           : walletBalanceCheck.error || 'Wallet USDC balance could not be checked.'}
                   </p>
                 )}
