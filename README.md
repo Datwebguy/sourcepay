@@ -109,6 +109,8 @@ SOURCEPAY_PROOF_VERIFY_LIMIT=30
 
 `CONTENT_REGISTRY_ADDRESS` is optional. When it points to a real deployed Arc Testnet content registry, SourcePay will write source fingerprints on-chain. If it is not configured, source registration remains wallet-signed and off-chain only; SourcePay does not create fake registry transaction hashes. `SOURCEPAY_AUTO_DEPLOY_CONTENT_REGISTRY=1` can deploy the registry at startup only when `AGENT_PRIVATE_KEY` is configured and funded, but production deployments should prefer an explicit `CONTENT_REGISTRY_ADDRESS`.
 
+`SOURCEPAY_ENABLE_SOCIAL_PROOF_MOCK=1` is **test-only**. It accepts `mock-x://handle/status/id?text=...` URLs so automated tests can exercise X fingerprint verification without calling x.com. Leave this disabled (or unset) in production.
+
 ## Main User Flows
 
 ### 1. Creator Source Registration
@@ -124,6 +126,18 @@ SOURCEPAY_PROOF_VERIFY_LIMIT=30
 9. Sign the wallet message.
 
 The source is registered only if the signature matches the payout wallet and the source fingerprint.
+
+### 1b. Social ownership proof (X/Twitter)
+
+Optional but recommended for stronger real-world identity:
+
+1. In the creator portal Identity tab, link your X handle (wallet-signed).
+2. On a registered source, click **Verify X**.
+3. Copy the provided verification message (includes the source fingerprint).
+4. Post that message publicly on X from the linked account.
+5. Paste the tweet URL and submit proof (wallet challenge signature required).
+
+SourcePay fetches the post, checks that the fingerprint appears in the text, and checks that the post author matches the linked X handle. Verified sources show a **Socially Verified** badge and get a slight routing preference.
 
 ### 2. Buyer Request Routing
 

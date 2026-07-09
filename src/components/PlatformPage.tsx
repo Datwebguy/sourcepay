@@ -1004,7 +1004,18 @@ export function PlatformPage({
                                           On-Chain
                                         </a>
                                       )}
-                                      {source.twitterHandle && (
+                                      {(source.sociallyVerified || source.socialProofStatus === 'verified') && (
+                                        <a
+                                          href={source.socialProofUrl || undefined}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-0.5 rounded bg-[#5FBF7A]/12 border border-[#5FBF7A]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#8CE0A0] hover:underline"
+                                        >
+                                          Socially Verified
+                                        </a>
+                                      )}
+                                      {source.twitterHandle &&
+                                        !(source.sociallyVerified || source.socialProofStatus === 'verified') && (
                                         <span className="inline-flex items-center gap-0.5 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF]">
                                           🐦 @{source.twitterHandle}
                                         </span>

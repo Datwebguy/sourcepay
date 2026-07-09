@@ -31,6 +31,11 @@ export type RegistrySource = {
   ownershipVerified?: boolean;
   registryTxHash?: string | null;
   registryStatus?: string | null;
+  socialProofStatus?: string | null;
+  socialProofUrl?: string | null;
+  socialProofHandle?: string | null;
+  socialProofVerifiedAt?: string | null;
+  sociallyVerified?: boolean;
   twitterHandle?: string | null;
   mediumHandle?: string | null;
   status: 'registered' | 'archived';

@@ -40,7 +40,13 @@ const maxPublicSourceContentLength = 360;
 const minUsdcAmount = 0.000001;
 const defaultNetwork = 'Arc Testnet';
 const walletAuthChallengeTtlSeconds = 5 * 60;
-const walletAuthPurposes = new Set(['creator-earnings', 'buyer-receipts', 'link-social']);
+const walletAuthPurposes = new Set([
+  'creator-earnings',
+  'buyer-receipts',
+  'link-social',
+  'social-verify',
+]);
+const socialProofMockEnabled = process.env.SOURCEPAY_ENABLE_SOCIAL_PROOF_MOCK === '1';
 const rateLimitBuckets = new Map();
 const rateLimitExpiryQueue = [];
 let rateLimitExpiryIndex = 0;
@@ -201,6 +207,18 @@ if (!sourceColumns.includes('registry_tx_hash')) {
 if (!sourceColumns.includes('registry_status')) {
   db.exec("ALTER TABLE sources ADD COLUMN registry_status TEXT DEFAULT 'none'");
 }
+if (!sourceColumns.includes('social_proof_status')) {
+  db.exec("ALTER TABLE sources ADD COLUMN social_proof_status TEXT DEFAULT 'none'");
+}
+if (!sourceColumns.includes('social_proof_url')) {
+  db.exec('ALTER TABLE sources ADD COLUMN social_proof_url TEXT');
+}
+if (!sourceColumns.includes('social_proof_handle')) {
+  db.exec('ALTER TABLE sources ADD COLUMN social_proof_handle TEXT');
+}
+if (!sourceColumns.includes('social_proof_verified_at')) {
+  db.exec('ALTER TABLE sources ADD COLUMN social_proof_verified_at TEXT');
+}
 
 const walletConfigColumns = db
   .prepare("PRAGMA table_info('wallet_config')")
@@ -259,9 +277,7 @@ for (const [column, definition] of [
   }
 }
 
-const statements = {
-  listSources: db.prepare(`
-    SELECT
+const sourceSelectSql = `
       id,
       title,
       kind,
@@ -273,31 +289,25 @@ const statements = {
       ownership_message AS ownershipMessage,
       registry_tx_hash AS registryTxHash,
       registry_status AS registryStatus,
+      social_proof_status AS socialProofStatus,
+      social_proof_url AS socialProofUrl,
+      social_proof_handle AS socialProofHandle,
+      social_proof_verified_at AS socialProofVerifiedAt,
       (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
       (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
       status,
       created_at AS createdAt
+`;
+
+const statements = {
+  listSources: db.prepare(`
+    SELECT ${sourceSelectSql}
     FROM sources
     WHERE status = 'registered'
     ORDER BY datetime(created_at) DESC
   `),
   listSourcesByWallet: db.prepare(`
-    SELECT
-      id,
-      title,
-      kind,
-      wallet,
-      price,
-      content,
-      owner_wallet AS ownerWallet,
-      ownership_signature AS ownershipSignature,
-      ownership_message AS ownershipMessage,
-      registry_tx_hash AS registryTxHash,
-      registry_status AS registryStatus,
-      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
-      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
-      status,
-      created_at AS createdAt
+    SELECT ${sourceSelectSql}
     FROM sources
     WHERE status = 'registered'
       AND lower(wallet) = lower(?)
@@ -318,22 +328,7 @@ const statements = {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `),
   getSource: db.prepare(`
-    SELECT
-      id,
-      title,
-      kind,
-      wallet,
-      price,
-      content,
-      owner_wallet AS ownerWallet,
-      ownership_signature AS ownershipSignature,
-      ownership_message AS ownershipMessage,
-      registry_tx_hash AS registryTxHash,
-      registry_status AS registryStatus,
-      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
-      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
-      status,
-      created_at AS createdAt
+    SELECT ${sourceSelectSql}
     FROM sources
     WHERE id = ?
   `),
@@ -357,28 +352,22 @@ const statements = {
       registry_status = ?
     WHERE id = ?
   `),
+  updateSourceSocialProof: db.prepare(`
+    UPDATE sources
+    SET
+      social_proof_status = ?,
+      social_proof_url = ?,
+      social_proof_handle = ?,
+      social_proof_verified_at = ?
+    WHERE id = ?
+  `),
   deleteSource: db.prepare(`
     UPDATE sources
     SET status = 'archived'
     WHERE id = ?
   `),
   eligibleSources: db.prepare(`
-    SELECT
-      id,
-      title,
-      kind,
-      wallet,
-      price,
-      content,
-      owner_wallet AS ownerWallet,
-      ownership_signature AS ownershipSignature,
-      ownership_message AS ownershipMessage,
-      registry_tx_hash AS registryTxHash,
-      registry_status AS registryStatus,
-      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
-      (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
-      status,
-      created_at AS createdAt
+    SELECT ${sourceSelectSql}
     FROM sources
     WHERE kind IN (SELECT value FROM json_each(?))
       AND status = 'registered'
@@ -964,6 +953,11 @@ function normalizeSource(row) {
     ownershipVerified: Boolean(row.ownershipSignature),
     registryTxHash: row.registryTxHash ?? null,
     registryStatus: row.registryStatus ?? 'none',
+    socialProofStatus: row.socialProofStatus ?? 'none',
+    socialProofUrl: row.socialProofUrl ?? null,
+    socialProofHandle: row.socialProofHandle ?? null,
+    socialProofVerifiedAt: row.socialProofVerifiedAt ?? null,
+    sociallyVerified: (row.socialProofStatus ?? 'none') === 'verified',
     twitterHandle: row.twitterHandle ?? null,
     mediumHandle: row.mediumHandle ?? null,
     status: row.status,
@@ -1100,7 +1094,148 @@ function buildSourceArchiveMessage(source) {
 function formatAuthPurpose(purpose) {
   if (purpose === 'creator-earnings') return 'Creator earnings';
   if (purpose === 'buyer-receipts') return 'Buyer receipts';
+  if (purpose === 'link-social') return 'link-social';
+  if (purpose === 'social-verify') return 'social-verify';
   return String(purpose ?? '').trim();
+}
+
+function buildSocialProofMessage(source) {
+  const normalized = normalizeSource(source);
+  return [
+    'SourcePay ownership proof',
+    `Fingerprint: ${normalized.fingerprint}`,
+    `Source: ${normalized.title}`,
+  ].join('\n');
+}
+
+function buildSocialProofTweetText(source) {
+  const normalized = normalizeSource(source);
+  // Compact enough for X/Twitter while remaining unique to the source fingerprint.
+  return `SourcePay verify ${normalized.fingerprint}`;
+}
+
+function tweetContainsFingerprint(text, fingerprint) {
+  const haystack = String(text ?? '').toLowerCase().replace(/\s+/gu, ' ');
+  const fp = String(fingerprint ?? '').toLowerCase();
+  if (!fp || fp.length < 16) return false;
+  if (haystack.includes(fp)) return true;
+  if (haystack.includes(`0x${fp}`)) return true;
+  if (haystack.includes(`sha256:${fp}`)) return true;
+  // Accept abbreviated fingerprint form used in UI: first16...last8
+  const shortForm = `${fp.slice(0, 16)}...${fp.slice(-8)}`;
+  if (haystack.includes(shortForm)) return true;
+  return false;
+}
+
+function parseXStatusUrl(value) {
+  try {
+    const url = new URL(String(value ?? '').trim());
+    const host = url.hostname.toLowerCase().replace(/^www\./u, '');
+    if (host !== 'x.com' && host !== 'twitter.com') return null;
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 3 || parts[1].toLowerCase() !== 'status') return null;
+    const handle = parts[0].replace(/^@/u, '');
+    const statusId = parts[2].replace(/[^0-9]/gu, '');
+    if (!handle || !statusId) return null;
+    return {
+      handle,
+      statusId,
+      url: `https://x.com/${handle}/status/${statusId}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseMockSocialProofUrl(value) {
+  if (!socialProofMockEnabled) return null;
+  try {
+    const url = new URL(String(value ?? '').trim());
+    if (url.protocol !== 'mock-x:') return null;
+    const parts = url.pathname.replace(/^\/+/u, '').split('/').filter(Boolean);
+    // mock-x://alice_writes/status/123?text=...
+    // hostname is the handle for mock-x:alice_writes/status/123
+    const handle = (url.hostname || parts[0] || '').replace(/^@/u, '');
+    const statusIdx = parts[0] === 'status' ? 0 : parts[1] === 'status' ? 1 : -1;
+    const statusId =
+      statusIdx >= 0 ? String(parts[statusIdx + 1] ?? '1').replace(/[^0-9]/gu, '') || '1' : '1';
+    const text = url.searchParams.get('text') || url.searchParams.get('body') || '';
+    if (!handle || !text) return null;
+    return {
+      handle,
+      statusId,
+      url: `mock-x://${handle}/status/${statusId}`,
+      text,
+      mock: true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchXPostForSocialProof(tweetUrl) {
+  const mock = parseMockSocialProofUrl(tweetUrl);
+  if (mock) {
+    return {
+      handle: mock.handle,
+      statusId: mock.statusId,
+      url: mock.url,
+      text: mock.text,
+      mock: true,
+    };
+  }
+
+  const parsed = parseXStatusUrl(tweetUrl);
+  if (!parsed) {
+    throw new ClientRequestError(
+      'Provide a public X/Twitter post URL like https://x.com/handle/status/123456.',
+    );
+  }
+
+  const response = await fetchPublicSourceUrl(new URL(parsed.url));
+  if (!response.ok) {
+    throw new ClientRequestError(`X post returned HTTP ${response.status}.`);
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  const body = await readLimitedResponseText(response, maxSourcePreviewBytes);
+  const isHtml = contentType.includes('html') || /<html|<body/iu.test(body);
+  const ogDescription =
+    body.match(/<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["']/iu)?.[1] ??
+    body.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["']/iu)?.[1] ??
+    '';
+  const ogTitle =
+    body.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/iu)?.[1] ??
+    body.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/iu)?.[1] ??
+    '';
+  const rawText = isHtml
+    ? [decodeHtml(ogDescription), decodeHtml(ogTitle), htmlToText(body)].join('\n')
+    : body;
+  const preview = buildXPostPreview({
+    url: new URL(parsed.url),
+    title: decodeHtml(ogTitle),
+    content: rawText,
+  });
+
+  return {
+    handle: parsed.handle,
+    statusId: parsed.statusId,
+    url: parsed.url,
+    text: `${preview.title}\n${preview.content}\n${decodeHtml(ogDescription)}\n${decodeHtml(ogTitle)}`,
+    mock: false,
+  };
+}
+
+async function validateSocialVerifyAccess(input) {
+  return validateWalletChallengeAccess(input, {
+    purpose: 'social-verify',
+    walletLabel: 'Payout wallet',
+    missingWalletError: 'Payout wallet is required.',
+    missingChallengeError: 'Request a fresh wallet challenge before verifying social proof.',
+    missingSignatureError: 'Sign with the payout wallet before verifying social proof.',
+    mismatchError: 'The signing wallet must match the payout wallet.',
+    invalidSignatureError: 'Wallet signature did not authorize social proof verification.',
+  });
 }
 
 function buildWalletAuthMessage({ wallet, purpose, nonce, expiresAt }) {
@@ -2144,8 +2279,11 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
     .map((source) => {
       const rawRelevance = scoreSource(source, uniqueQuestionTokens, questionPhrases);
       const isOnChain = source.registryTxHash && source.registryStatus === 'registered';
-      const isSociallyVerified = source.twitterHandle || source.mediumHandle;
-      const boost = (isOnChain ? 0.05 : 0) + (isSociallyVerified ? 0.05 : 0);
+      const isTweetVerified = source.socialProofStatus === 'verified';
+      const isHandleLinked = Boolean(source.twitterHandle || source.mediumHandle);
+      // Prefer real tweet fingerprint proofs over handle-only links.
+      const boost =
+        (isOnChain ? 0.05 : 0) + (isTweetVerified ? 0.08 : isHandleLinked ? 0.03 : 0);
       return {
         ...source,
         relevance: rawRelevance + boost,
@@ -2733,6 +2871,158 @@ async function handleRequest(request, response) {
       sendJson(response, 201, {
         source: createdSource,
       });
+      return;
+    }
+
+    const sourceSocialProofMatch = url.pathname.match(
+      /^\/api\/sources\/([^/]+)\/social-proof$/,
+    );
+    if (sourceSocialProofMatch && request.method === 'GET') {
+      const sourceId = sourceSocialProofMatch[1];
+      const existing = statements.getSource.get(sourceId);
+      if (!existing || existing.status !== 'registered') {
+        sendJson(response, 404, { error: 'Source not found.' });
+        return;
+      }
+
+      const source = normalizeSource(existing);
+      sendJson(response, 200, {
+        sourceId: source.id,
+        fingerprint: source.fingerprint,
+        tweetText: buildSocialProofTweetText(existing),
+        fullMessage: buildSocialProofMessage(existing),
+        socialProofStatus: source.socialProofStatus,
+        socialProofUrl: source.socialProofUrl,
+        socialProofHandle: source.socialProofHandle,
+        socialProofVerifiedAt: source.socialProofVerifiedAt,
+        sociallyVerified: source.sociallyVerified,
+        linkedTwitterHandle: source.twitterHandle,
+      });
+      return;
+    }
+
+    if (sourceSocialProofMatch && request.method === 'POST') {
+      if (applyRateLimit(request, response, 'sourceWrite')) return;
+      const sourceId = sourceSocialProofMatch[1];
+      const existing = statements.getSource.get(sourceId);
+      if (!existing || existing.status !== 'registered') {
+        sendJson(response, 404, { error: 'Source not found.' });
+        return;
+      }
+
+      const body = await readBody(request);
+      const auth = await validateSocialVerifyAccess(body);
+      if (auth.error) {
+        logEvent('warn', 'social_proof.auth_failed', {
+          ...requestLogFields(request, url),
+          status: auth.status,
+          reason: auth.error,
+          sourceId: maskIdentifier(sourceId),
+        });
+        sendJson(response, auth.status, { error: auth.error });
+        return;
+      }
+
+      if (auth.value.wallet.toLowerCase() !== String(existing.wallet).toLowerCase()) {
+        sendJson(response, 403, {
+          error: 'Only the source payout wallet can submit social proof.',
+        });
+        return;
+      }
+
+      const tweetUrl = String(body.tweetUrl ?? body.proofUrl ?? '').trim();
+      if (!tweetUrl) {
+        sendJson(response, 400, { error: 'Tweet URL is required.' });
+        return;
+      }
+
+      try {
+        const post = await fetchXPostForSocialProof(tweetUrl);
+        const fingerprint = sourceFingerprint({
+          title: existing.title,
+          kind: existing.kind,
+          wallet: existing.wallet,
+          price: existing.price,
+          content: existing.content,
+        });
+
+        if (!tweetContainsFingerprint(post.text, fingerprint)) {
+          statements.updateSourceSocialProof.run(
+            'failed',
+            post.url,
+            post.handle,
+            null,
+            sourceId,
+          );
+          sendJson(response, 400, {
+            error:
+              'The X post does not include this source fingerprint. Post the verification message, then submit the tweet URL again.',
+            expectedFingerprint: fingerprint,
+            expectedTweetText: buildSocialProofTweetText(existing),
+          });
+          return;
+        }
+
+        const linkedTwitter = String(existing.twitterHandle ?? '').trim().toLowerCase();
+        if (linkedTwitter && linkedTwitter !== post.handle.toLowerCase()) {
+          statements.updateSourceSocialProof.run(
+            'failed',
+            post.url,
+            post.handle,
+            null,
+            sourceId,
+          );
+          sendJson(response, 400, {
+            error: `This post is from @${post.handle}, but this wallet is linked to @${linkedTwitter}. Post from the linked account or update the linked X handle.`,
+          });
+          return;
+        }
+
+        // If no X handle is linked yet, bind the verified post author as the wallet's X identity.
+        if (!linkedTwitter) {
+          statements.insertLinkedSocial.run(existing.wallet, 'twitter', post.handle);
+        }
+
+        const verifiedAt = new Date().toISOString();
+        statements.updateSourceSocialProof.run(
+          'verified',
+          post.url,
+          post.handle,
+          verifiedAt,
+          sourceId,
+        );
+
+        const source = normalizeSource(statements.getSource.get(sourceId));
+        logEvent('info', 'social_proof.verified', {
+          ...requestLogFields(request, url),
+          sourceId: maskIdentifier(sourceId),
+          wallet: maskAddress(existing.wallet),
+          handle: post.handle,
+          mock: Boolean(post.mock),
+        });
+        sendJson(response, 200, {
+          success: true,
+          source,
+          socialProof: {
+            status: 'verified',
+            url: post.url,
+            handle: post.handle,
+            verifiedAt,
+          },
+        });
+      } catch (error) {
+        if (error instanceof ClientRequestError) {
+          sendJson(response, error.status || 400, { error: error.message });
+          return;
+        }
+        logError('social_proof.verify_failed', error, {
+          ...requestLogFields(request, url),
+          sourceId: maskIdentifier(sourceId),
+        });
+        sendJson(response, 500, {
+          error: 'Could not verify the X post. Try again with a public post URL.',
+        });
+      }
       return;
     }
 

@@ -992,6 +992,7 @@ test('hybrid ownership and trust layer verification', async () => {
       SOURCEPAY_DB_PATH: dbPath,
       ARC_RPC_URL: 'https://rpc.testnet.arc.network',
       SOURCEPAY_DISABLE_LOCAL_SIGNING: '1',
+      SOURCEPAY_ENABLE_SOCIAL_PROOF_MOCK: '1',
       SOURCEPAY_AUTH_LIMIT: '50',
       SOURCEPAY_SOURCE_WRITE_LIMIT: '50',
     },
@@ -1021,6 +1022,16 @@ test('hybrid ownership and trust layer verification', async () => {
         throw new Error(`POST ${path} failed: ${response.status} ${await response.text()}`);
       }
       return response.json();
+    };
+
+    const localPostJsonRaw = async (path, body) => {
+      const response = await fetch(`${testBaseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const payload = await response.json();
+      return { status: response.status, payload };
     };
 
     const localWaitForHealth = async () => {
@@ -1101,7 +1112,79 @@ test('hybrid ownership and trust layer verification', async () => {
     assert.equal(regPayload.source.registryStatus, 'not_configured');
     assert.equal(regPayload.source.registryTxHash, null);
     assert.equal(regPayload.source.twitterHandle, 'alice_writes');
+    assert.equal(regPayload.source.socialProofStatus, 'none');
+    assert.equal(regPayload.source.sociallyVerified, false);
 
+    // 6. Fetch the social proof tweet text for this source.
+    const proofMeta = await localGetJson(`/api/sources/${regPayload.source.id}/social-proof`);
+    assert.equal(proofMeta.fingerprint, regPayload.source.fingerprint);
+    assert.match(proofMeta.tweetText, new RegExp(regPayload.source.fingerprint, 'u'));
+    assert.equal(proofMeta.socialProofStatus, 'none');
+
+    // 7. Reject a post that does not contain the fingerprint.
+    const badChallenge = await localPostJson('/api/auth/challenge', {
+      wallet: creatorAccount.address,
+      purpose: 'social-verify',
+    });
+    const badSignature = await creatorAccount.signMessage({
+      message: badChallenge.challenge.message,
+    });
+    const badProof = await localPostJsonRaw(`/api/sources/${regPayload.source.id}/social-proof`, {
+      wallet: creatorAccount.address,
+      ownerWallet: creatorAccount.address,
+      challengeId: badChallenge.challenge.id,
+      authSignature: badSignature,
+      tweetUrl: `mock-x://alice_writes/status/1?text=${encodeURIComponent('hello world without fingerprint')}`,
+    });
+    assert.equal(badProof.status, 400);
+    assert.match(String(badProof.payload.error), /does not include this source fingerprint/iu);
+
+    // 8. Reject a fingerprint post from a different X handle than the linked account.
+    const wrongHandleChallenge = await localPostJson('/api/auth/challenge', {
+      wallet: creatorAccount.address,
+      purpose: 'social-verify',
+    });
+    const wrongHandleSignature = await creatorAccount.signMessage({
+      message: wrongHandleChallenge.challenge.message,
+    });
+    const wrongHandleProof = await localPostJsonRaw(
+      `/api/sources/${regPayload.source.id}/social-proof`,
+      {
+        wallet: creatorAccount.address,
+        ownerWallet: creatorAccount.address,
+        challengeId: wrongHandleChallenge.challenge.id,
+        authSignature: wrongHandleSignature,
+        tweetUrl: `mock-x://not_alice/status/2?text=${encodeURIComponent(proofMeta.tweetText)}`,
+      },
+    );
+    assert.equal(wrongHandleProof.status, 400);
+    assert.match(String(wrongHandleProof.payload.error), /linked to @alice_writes/iu);
+
+    // 9. Accept a valid mock X post that includes the fingerprint and matching handle.
+    const goodChallenge = await localPostJson('/api/auth/challenge', {
+      wallet: creatorAccount.address,
+      purpose: 'social-verify',
+    });
+    const goodSignature = await creatorAccount.signMessage({
+      message: goodChallenge.challenge.message,
+    });
+    const goodProof = await localPostJson(`/api/sources/${regPayload.source.id}/social-proof`, {
+      wallet: creatorAccount.address,
+      ownerWallet: creatorAccount.address,
+      challengeId: goodChallenge.challenge.id,
+      authSignature: goodSignature,
+      tweetUrl: `mock-x://alice_writes/status/42?text=${encodeURIComponent(proofMeta.tweetText)}`,
+    });
+    assert.equal(goodProof.success, true);
+    assert.equal(goodProof.source.socialProofStatus, 'verified');
+    assert.equal(goodProof.source.sociallyVerified, true);
+    assert.equal(goodProof.source.socialProofHandle, 'alice_writes');
+    assert.ok(goodProof.source.socialProofUrl);
+    assert.ok(goodProof.source.socialProofVerifiedAt);
+
+    const detail = await localGetJson(`/api/sources/${regPayload.source.id}`);
+    assert.equal(detail.source.sociallyVerified, true);
+    assert.equal(detail.source.socialProofStatus, 'verified');
   } finally {
     server.kill();
     await onceExit(server);

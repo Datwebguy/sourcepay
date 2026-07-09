@@ -116,7 +116,18 @@ export function SourcePage({
                       On-Chain Registered
                     </a>
                   )}
-                  {source.twitterHandle && (
+                  {(source.sociallyVerified || source.socialProofStatus === 'verified') && (
+                    <a
+                      href={source.socialProofUrl || undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="rounded-full border border-[#5FBF7A]/25 bg-[#5FBF7A]/10 px-2.5 py-1 text-xs font-bold text-[#8CE0A0] hover:underline"
+                    >
+                      Socially Verified
+                      {source.socialProofHandle ? ` · @${source.socialProofHandle}` : ''}
+                    </a>
+                  )}
+                  {source.twitterHandle && !(source.sociallyVerified || source.socialProofStatus === 'verified') && (
                     <span className="rounded-full border border-[#5FA9FF]/25 bg-[#5FA9FF]/10 px-2.5 py-1 text-xs font-bold text-[#9CCCFF]">
                       🐦 @{source.twitterHandle}
                     </span>

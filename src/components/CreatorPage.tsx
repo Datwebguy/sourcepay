@@ -86,6 +86,11 @@ export function CreatorPage({
   const [twitterInput, setTwitterInput] = useState('');
   const [mediumInput, setMediumInput] = useState('');
   const [isLinking, setIsLinking] = useState(false);
+  const [verifyPanelSourceId, setVerifyPanelSourceId] = useState<string | null>(null);
+  const [verifyTweetUrl, setVerifyTweetUrl] = useState('');
+  const [verifyTweetText, setVerifyTweetText] = useState('');
+  const [isLoadingProof, setIsLoadingProof] = useState(false);
+  const [isVerifyingSocial, setIsVerifyingSocial] = useState(false);
 
   const sourceWalletFilter = connectedWallet.address || draft.wallet.trim();
 
@@ -361,6 +366,114 @@ export function CreatorPage({
       setEarnings(null);
     } catch (requestError) {
       setError((requestError as Error).message);
+    }
+  };
+
+  const openSocialVerify = async (source: RegistrySource) => {
+    setError('');
+    setInfo('');
+    setVerifyPanelSourceId(source.id);
+    setVerifyTweetUrl('');
+    setIsLoadingProof(true);
+    try {
+      const proof = await requestJson<{
+        tweetText: string;
+        fingerprint: string;
+        socialProofStatus: string;
+        socialProofUrl?: string | null;
+      }>(`/api/sources/${source.id}/social-proof`);
+      setVerifyTweetText(proof.tweetText);
+      if (proof.socialProofStatus === 'verified' && proof.socialProofUrl) {
+        setVerifyTweetUrl(proof.socialProofUrl);
+      }
+    } catch (requestError) {
+      setError((requestError as Error).message);
+      setVerifyPanelSourceId(null);
+    } finally {
+      setIsLoadingProof(false);
+    }
+  };
+
+  const copyVerifyText = async () => {
+    if (!verifyTweetText) return;
+    try {
+      await navigator.clipboard.writeText(verifyTweetText);
+      setInfo('Verification message copied. Post it on X, then paste the tweet URL below.');
+    } catch {
+      setError('Could not copy to clipboard. Select and copy the message manually.');
+    }
+  };
+
+  const handleSocialVerify = async (source: RegistrySource) => {
+    setError('');
+    setInfo('');
+    if (!verifyTweetUrl.trim()) {
+      setError('Paste the public X/Twitter post URL that contains the fingerprint.');
+      return;
+    }
+
+    setIsVerifyingSocial(true);
+    try {
+      let signer = connectedWallet.address;
+      if (!signer) {
+        signer = await onConnectWallet();
+      }
+      if (!signer) {
+        throw new Error('Connect your wallet before verifying social proof.');
+      }
+      const provider = getEthereumProvider();
+      if (!provider) {
+        throw new Error('A browser wallet is required to sign this action.');
+      }
+      await ensureArcNetwork(provider);
+      const activePayer = await getActiveProviderAccount(provider);
+      if (!activePayer) {
+        throw new Error('Select the payout wallet in your browser extension before continuing.');
+      }
+      signer = activePayer;
+
+      if (source.wallet.toLowerCase() !== String(signer).toLowerCase()) {
+        throw new Error('You can only verify sources owned by your wallet.');
+      }
+
+      const challengePayload = await requestJson<{ challenge: any }>('/api/auth/challenge', {
+        method: 'POST',
+        body: JSON.stringify({
+          wallet: signer,
+          purpose: 'social-verify',
+        }),
+      });
+      const authSignature = await provider.request({
+        method: 'personal_sign',
+        params: [challengePayload.challenge.message, signer],
+      });
+
+      const response = await requestJson<{
+        success: boolean;
+        source: RegistrySource;
+      }>(`/api/sources/${source.id}/social-proof`, {
+        method: 'POST',
+        body: JSON.stringify({
+          wallet: signer,
+          ownerWallet: signer,
+          challengeId: challengePayload.challenge.id,
+          authSignature: String(authSignature),
+          tweetUrl: verifyTweetUrl.trim(),
+        }),
+      });
+
+      if (response.success) {
+        setInfo('Source socially verified via X post proof.');
+        setVerifyPanelSourceId(null);
+        setVerifyTweetUrl('');
+        setVerifyTweetText('');
+        await loadSources(String(signer));
+        await loadSocials(String(signer));
+      }
+    } catch (requestError) {
+      setError((requestError as Error).message);
+    } finally {
+      setIsVerifyingSocial(false);
     }
   };
 
@@ -816,53 +929,127 @@ export function CreatorPage({
                       ) : (
                         sources.map((item) => {
                           const Icon = sourceKindIcons[item.kind];
+                          const isVerifyOpen = verifyPanelSourceId === item.id;
                           return (
-                            <div key={item.id} className="p-3 flex items-center justify-between gap-3">
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/5 text-white/60">
-                                  <Icon size={14} />
-                                </div>
-                                <div className="min-w-0">
-                                  <button
-                                    type="button"
-                                    onClick={() => onOpenSource(item.id)}
-                                    className="text-left text-xs font-bold text-white hover:text-[#9CCCFF] hover:underline truncate block"
-                                  >
-                                    {item.title}
-                                  </button>
-                                  <p className="text-[10px] text-white/34 mt-0.5">{formatUsd(item.price)} USDC · {shortFingerprint(item.fingerprint)}</p>
-                                  <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                                    {item.registryTxHash && item.registryStatus === 'registered' && (
-                                      <a
-                                        href={`https://testnet.arcscan.app/tx/${item.registryTxHash}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="inline-flex items-center gap-1 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF] hover:underline"
-                                      >
-                                        On-Chain
-                                      </a>
-                                    )}
-                                    {item.twitterHandle && (
-                                      <span className="inline-flex items-center gap-0.5 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF]">
-                                        🐦 @{item.twitterHandle}
-                                      </span>
-                                    )}
-                                    {item.mediumHandle && (
-                                      <span className="inline-flex items-center gap-0.5 rounded bg-[#5FBF7A]/12 border border-[#5FBF7A]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#8CE0A0]">
-                                        📝 @{item.mediumHandle}
-                                      </span>
-                                    )}
+                            <div key={item.id} className="p-3 space-y-2">
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/5 text-white/60">
+                                    <Icon size={14} />
+                                  </div>
+                                  <div className="min-w-0">
+                                    <button
+                                      type="button"
+                                      onClick={() => onOpenSource(item.id)}
+                                      className="text-left text-xs font-bold text-white hover:text-[#9CCCFF] hover:underline truncate block"
+                                    >
+                                      {item.title}
+                                    </button>
+                                    <p className="text-[10px] text-white/34 mt-0.5">
+                                      {formatUsd(item.price)} USDC · {shortFingerprint(item.fingerprint)}
+                                    </p>
+                                    <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                      {item.ownershipVerified && (
+                                        <span className="inline-flex items-center rounded bg-white/8 border border-white/12 px-1.5 py-0.5 text-[9px] font-extrabold text-white/70">
+                                          Wallet signed
+                                        </span>
+                                      )}
+                                      {item.registryTxHash && item.registryStatus === 'registered' && (
+                                        <a
+                                          href={`https://testnet.arcscan.app/tx/${item.registryTxHash}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-1 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF] hover:underline"
+                                        >
+                                          On-Chain
+                                        </a>
+                                      )}
+                                      {item.sociallyVerified || item.socialProofStatus === 'verified' ? (
+                                        <a
+                                          href={item.socialProofUrl || undefined}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-0.5 rounded bg-[#5FBF7A]/12 border border-[#5FBF7A]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#8CE0A0] hover:underline"
+                                        >
+                                          Socially Verified
+                                          {item.socialProofHandle ? ` · @${item.socialProofHandle}` : ''}
+                                        </a>
+                                      ) : item.twitterHandle ? (
+                                        <span className="inline-flex items-center gap-0.5 rounded bg-[#5FA9FF]/12 border border-[#5FA9FF]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#9CCCFF]">
+                                          🐦 @{item.twitterHandle}
+                                        </span>
+                                      ) : null}
+                                      {item.mediumHandle && (
+                                        <span className="inline-flex items-center gap-0.5 rounded bg-[#5FBF7A]/12 border border-[#5FBF7A]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#8CE0A0]">
+                                          📝 @{item.mediumHandle}
+                                        </span>
+                                      )}
+                                    </div>
                                   </div>
                                 </div>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {!(item.sociallyVerified || item.socialProofStatus === 'verified') && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        isVerifyOpen ? setVerifyPanelSourceId(null) : openSocialVerify(item)
+                                      }
+                                      className="rounded-full border border-white/12 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-white/70 hover:bg-white/5 hover:text-white transition"
+                                    >
+                                      Verify X
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleArchive(item)}
+                                    disabled={isArchiving[item.id]}
+                                    className="rounded-full p-1.5 hover:bg-white/5 text-white/50 hover:text-[#F7B49D] transition"
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </div>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => handleArchive(item)}
-                                disabled={isArchiving[item.id]}
-                                className="rounded-full p-1.5 hover:bg-white/5 text-white/50 hover:text-[#F7B49D] transition shrink-0"
-                              >
-                                <Trash2 size={14} />
-                              </button>
+
+                              {isVerifyOpen && (
+                                <div className="rounded-[8px] border border-white/10 bg-black/25 p-3 space-y-2">
+                                  <p className="text-[11px] font-semibold text-white/70">
+                                    Post this exact message on X, then paste the public tweet URL:
+                                  </p>
+                                  <div className="flex gap-2">
+                                    <code className="flex-1 break-all rounded border border-white/10 bg-black/40 px-2 py-1.5 text-[10px] text-[#9CCCFF]">
+                                      {isLoadingProof ? 'Loading verification message…' : verifyTweetText || '—'}
+                                    </code>
+                                    <button
+                                      type="button"
+                                      onClick={copyVerifyText}
+                                      disabled={!verifyTweetText}
+                                      className="rounded border border-white/12 px-2 py-1 text-[10px] font-bold uppercase text-white/75 hover:bg-white/5 disabled:opacity-40"
+                                    >
+                                      Copy
+                                    </button>
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <input
+                                      type="url"
+                                      placeholder="https://x.com/you/status/…"
+                                      value={verifyTweetUrl}
+                                      onChange={(e) => setVerifyTweetUrl(e.target.value)}
+                                      className="flex-1 rounded-[8px] border border-white/10 bg-black/30 px-3 py-2 text-xs font-medium text-white outline-none focus:border-[#5FBF7A]/80"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSocialVerify(item)}
+                                      disabled={isVerifyingSocial || !verifyTweetUrl.trim()}
+                                      className="rounded-[8px] bg-white px-3 py-2 text-[10px] font-bold uppercase tracking-[0.08em] text-black hover:bg-[#5FA9FF] transition disabled:opacity-40"
+                                    >
+                                      {isVerifyingSocial ? 'Checking…' : 'Submit proof'}
+                                    </button>
+                                  </div>
+                                  <p className="text-[10px] text-white/40">
+                                    Optional but recommended. Verified sources get a stronger routing preference.
+                                  </p>
+                                </div>
+                              )}
                             </div>
                           );
                         })
@@ -879,7 +1066,7 @@ export function CreatorPage({
                   <div className="border-b border-white/10 pb-3">
                     <h3 className="text-base font-bold text-white">Verify Publishing Channels</h3>
                     <p className="text-xs leading-relaxed text-white/55 mt-0.5">
-                      Link your X (Twitter) or Medium accounts to this wallet. All content registered by this wallet will inherit these verified badges in the marketplace.
+                      Link your X (Twitter) or Medium accounts to this wallet, then use <span className="text-white/80 font-semibold">Verify X</span> on each registered source to post a fingerprint proof tweet. Tweet proof is stronger than handle linking alone.
                     </p>
                   </div>
 
