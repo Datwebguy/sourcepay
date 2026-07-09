@@ -127,6 +127,13 @@ SOURCEPAY_PROOF_VERIFY_LIMIT=30
 
 The source is registered only if the signature matches the payout wallet and the source fingerprint.
 
+**Anti-copy ownership rules:**
+
+- Exact content bodies (normalized text + class) can only be claimed once while registered. Another wallet cannot re-register the same article/post/transcript text.
+- **Social post** requires a linked X handle and the public `x.com/.../status/...` URL from that handle. Free-text paste is rejected.
+- **Article** requires a linked Medium handle and a Medium URL under that profile. Free-text paste is rejected.
+- **Transcript** may be free-text (`contentTrust: unbound`) but is **not routing-eligible** until the creator completes **Verify X** social proof (`social_proven`).
+
 ### 1b. Social ownership proof (X/Twitter)
 
 Optional but recommended for stronger real-world identity:

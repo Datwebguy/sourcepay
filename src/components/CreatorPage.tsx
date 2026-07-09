@@ -250,11 +250,28 @@ export function CreatorPage({
       const title = preview?.title.trim() || draft.title.trim();
       const content = preview?.content.trim() || draft.content.trim();
       const price = Number(draft.price);
+      const originUrl = (preview?.url || draft.url || '').trim();
 
       if (!title) throw new Error('Source title is required.');
       if (!content) throw new Error('Source content is required.');
       if (!Number.isFinite(price) || price < MIN_USDC_AMOUNT) {
         throw new Error(`Citation price must be at least ${MIN_USDC_AMOUNT} USDC.`);
+      }
+      if (draft.kind === 'Social post' && !originUrl) {
+        throw new Error(
+          'Social posts require your public X post URL (Identity tab must link that X handle).',
+        );
+      }
+      if (draft.kind === 'Article' && !originUrl) {
+        throw new Error(
+          'Articles require your Medium URL (Identity tab must link that Medium handle).',
+        );
+      }
+      if (draft.kind === 'Social post' && !linkedTwitter) {
+        throw new Error('Link your X handle in the Identity tab before registering a Social post.');
+      }
+      if (draft.kind === 'Article' && !linkedMedium) {
+        throw new Error('Link your Medium handle in the Identity tab before registering an Article.');
       }
 
       const unsignedSource = {
@@ -271,10 +288,11 @@ export function CreatorPage({
         params: [message, signerAddress],
       });
 
-      await requestJson<{ source: RegistrySource }>('/api/sources', {
+      const registered = await requestJson<{ source: RegistrySource }>('/api/sources', {
         method: 'POST',
         body: JSON.stringify({
           ...unsignedSource,
+          originUrl: originUrl || undefined,
           ownerWallet: signerAddress,
           ownershipSignature: String(signature),
         }),
@@ -289,7 +307,13 @@ export function CreatorPage({
         content: '',
       });
       setPreview(null);
-      setInfo('Source registered successfully.');
+      if (registered.source.contentTrust === 'unbound') {
+        setInfo(
+          'Transcript registered with low trust. Use Verify X on this source so it becomes eligible for routing payouts.',
+        );
+      } else {
+        setInfo('Source registered successfully with platform-bound ownership.');
+      }
       await loadSources(signerAddress);
     } catch (requestError) {
       setError((requestError as Error).message);
@@ -802,7 +826,9 @@ export function CreatorPage({
                   <div className="border-b border-white/10 pb-3">
                     <h3 className="text-base font-bold text-white">Register Creator Content</h3>
                     <p className="text-xs leading-relaxed text-white/55 mt-0.5">
-                      Publish content descriptions to the metadata marketplace.
+                      Exact copies of existing content are blocked. Social posts must use your linked X URL;
+                      Articles must use your linked Medium URL. Transcripts can be free-text but stay low-trust
+                      until you Verify X.
                     </p>
                   </div>
 
@@ -851,11 +877,21 @@ export function CreatorPage({
 
                     <label className="block">
                       <span className="mb-2 block text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
-                        Source URL (optional)
+                        {draft.kind === 'Social post'
+                          ? 'X Post URL (required)'
+                          : draft.kind === 'Article'
+                            ? 'Medium URL (required)'
+                            : 'Source URL (optional for transcripts)'}
                       </span>
                       <input
                         type="url"
-                        placeholder="https://example.com/article"
+                        placeholder={
+                          draft.kind === 'Social post'
+                            ? 'https://x.com/you/status/…'
+                            : draft.kind === 'Article'
+                              ? 'https://medium.com/@you/your-article'
+                              : 'https://example.com/transcript (optional)'
+                        }
                         value={draft.url}
                         onChange={(event) =>
                           setDraft((current) => ({
@@ -866,15 +902,34 @@ export function CreatorPage({
                         }
                         className="w-full rounded-[8px] border border-white/10 bg-black/30 px-3 py-2.5 text-sm font-medium text-white outline-none focus:border-[#5FBF7A]/80"
                       />
+                      <p className="mt-1.5 text-[10px] text-white/40">
+                        {draft.kind === 'Social post' && (
+                          <>
+                            Must be from your linked X handle
+                            {linkedTwitter ? ` (@${linkedTwitter})` : ' (link it in Identity first)'}.
+                          </>
+                        )}
+                        {draft.kind === 'Article' && (
+                          <>
+                            Must be from your linked Medium profile
+                            {linkedMedium ? ` (@${linkedMedium})` : ' (link it in Identity first)'}.
+                          </>
+                        )}
+                        {draft.kind === 'Transcript' && (
+                          <>
+                            Free-text transcripts are allowed but stay low-trust until social proof.
+                          </>
+                        )}
+                      </p>
                     </label>
 
-                    {!draft.url && (
+                    {draft.kind === 'Transcript' && (
                       <label className="block">
                         <span className="mb-2 block text-[11px] font-bold uppercase tracking-[0.16em] text-white/42">
-                          Source Text Content
+                          Transcript Text Content
                         </span>
                         <textarea
-                          placeholder="Paste or write the full text to register."
+                          placeholder="Paste or write the transcript text to register."
                           value={draft.content}
                           onChange={(event) =>
                             setDraft((current) => ({ ...current, content: event.target.value }))
@@ -882,6 +937,12 @@ export function CreatorPage({
                           className="min-h-32 w-full resize-none rounded-[8px] border border-white/10 bg-black/30 p-3 text-sm font-medium leading-relaxed text-white outline-none transition placeholder:text-white/25 focus:border-[#5FBF7A]/80"
                         />
                       </label>
+                    )}
+                    {draft.kind !== 'Transcript' && !draft.url && (
+                      <p className="rounded-[8px] border border-[#F4845F]/25 bg-[#F4845F]/8 px-3 py-2 text-[11px] text-[#F7B49D]">
+                        Free-text paste is blocked for {draft.kind}. Provide your own platform URL and generate a
+                        preview.
+                      </p>
                     )}
 
                     <div className="flex gap-2">
@@ -952,6 +1013,16 @@ export function CreatorPage({
                                       {item.ownershipVerified && (
                                         <span className="inline-flex items-center rounded bg-white/8 border border-white/12 px-1.5 py-0.5 text-[9px] font-extrabold text-white/70">
                                           Wallet signed
+                                        </span>
+                                      )}
+                                      {item.contentTrust === 'platform_bound' && (
+                                        <span className="inline-flex items-center rounded bg-[#5FBF7A]/12 border border-[#5FBF7A]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#8CE0A0]">
+                                          Platform bound
+                                        </span>
+                                      )}
+                                      {item.contentTrust === 'unbound' && (
+                                        <span className="inline-flex items-center rounded bg-[#F4845F]/12 border border-[#F4845F]/20 px-1.5 py-0.5 text-[9px] font-extrabold text-[#F7B49D]">
+                                          Low trust
                                         </span>
                                       )}
                                       {item.registryTxHash && item.registryStatus === 'registered' && (

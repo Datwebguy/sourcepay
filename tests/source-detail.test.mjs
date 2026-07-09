@@ -84,6 +84,26 @@ test('source detail reflects real routed citation history', async () => {
     assert.equal(credentialPreviewResponse.status, 400);
     assert.equal(credentialPreviewPayload.error, 'Source URL cannot include credentials.');
 
+    // Link Medium profiles so Articles can be platform-bound to the author.
+    await linkSocialAccount(creatorAccount, 'medium', 'alice_writes');
+    await linkSocialAccount(otherCreatorAccount, 'medium', 'bob_catalog');
+
+    const freeTextArticleResponse = await fetch(`${baseUrl}/api/sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: previewPayload.preview.title,
+        kind: 'Article',
+        wallet: creatorAccount.address,
+        price: 1,
+        content: previewPayload.preview.content,
+        ownershipSignature: '0xdead',
+      }),
+    });
+    const freeTextArticlePayload = await freeTextArticleResponse.json();
+    assert.equal(freeTextArticleResponse.status, 400);
+    assert.match(freeTextArticlePayload.error, /Medium URL/iu);
+
     const unsignedSourceResponse = await fetch(`${baseUrl}/api/sources`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -93,6 +113,7 @@ test('source detail reflects real routed citation history', async () => {
         wallet: creatorAccount.address,
         price: 1,
         content: previewPayload.preview.content,
+        originUrl: 'https://medium.com/@alice_writes/arc-citation-licensing-note',
       }),
     });
     const unsignedSourcePayload = await unsignedSourceResponse.json();
@@ -112,6 +133,7 @@ test('source detail reflects real routed citation history', async () => {
       wallet: creatorAccount.address,
       price: 1,
       content: previewPayload.preview.content,
+      originUrl: 'https://medium.com/@alice_writes/arc-citation-licensing-note',
       ownerWallet: creatorAccount.address,
       ownershipSignature,
     });
@@ -119,6 +141,34 @@ test('source detail reflects real routed citation history', async () => {
     assert.ok(sourcePayload.source.id);
     assert.equal(sourcePayload.source.fingerprint.length, 64);
     assert.equal(sourcePayload.source.ownershipVerified, true);
+    assert.equal(sourcePayload.source.contentTrust, 'platform_bound');
+    assert.equal(sourcePayload.source.routingEligible, true);
+
+    // Exact content body cannot be re-registered by another wallet.
+    const copyAttemptSignature = await signSourceOwnership(otherCreatorAccount, {
+      title: 'Stolen title does not matter',
+      kind: 'Article',
+      wallet: otherCreatorAccount.address,
+      price: 2,
+      content: previewPayload.preview.content,
+    });
+    const copyAttemptResponse = await fetch(`${baseUrl}/api/sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        title: 'Stolen title does not matter',
+        kind: 'Article',
+        wallet: otherCreatorAccount.address,
+        price: 2,
+        content: previewPayload.preview.content,
+        originUrl: 'https://medium.com/@bob_catalog/stolen-copy',
+        ownerWallet: otherCreatorAccount.address,
+        ownershipSignature: copyAttemptSignature,
+      }),
+    });
+    const copyAttemptPayload = await copyAttemptResponse.json();
+    assert.equal(copyAttemptResponse.status, 400);
+    assert.match(copyAttemptPayload.error, /already registered/iu);
 
     const otherSource = {
       title: 'Independent cataloging memo',
@@ -131,9 +181,11 @@ test('source detail reflects real routed citation history', async () => {
     const otherOwnershipSignature = await signSourceOwnership(otherCreatorAccount, otherSource);
     const otherSourcePayload = await postJson('/api/sources', {
       ...otherSource,
+      originUrl: 'https://medium.com/@bob_catalog/independent-cataloging-memo',
       ownerWallet: otherCreatorAccount.address,
       ownershipSignature: otherOwnershipSignature,
     });
+    assert.equal(otherSourcePayload.source.contentTrust, 'platform_bound');
 
     const globalSourcesPayload = await getJson('/api/sources');
     assert.equal(globalSourcesPayload.sources.length, 2);
@@ -810,7 +862,9 @@ test('agent wallet autonomous payment settles cleanly', async () => {
     const previewPayload = await postJson('/api/source-preview', {
       material: 'Test content to cite autonomously.',
     });
-    
+
+    await linkSocialAccount(creatorAccount, 'medium', 'agent_creator');
+
     const unsignedSource = {
       title: previewPayload.preview.title,
       kind: 'Article',
@@ -824,9 +878,11 @@ test('agent wallet autonomous payment settles cleanly', async () => {
 
     const sourcePayload = await postJson('/api/sources', {
       ...unsignedSource,
+      originUrl: 'https://medium.com/@agent_creator/autonomous-cite',
       ownershipSignature: signature,
     });
     assert.equal(sourcePayload.source.price, 0.000001);
+    assert.equal(sourcePayload.source.contentTrust, 'platform_bound');
 
     // Route a request for the source
     const routePayload = await postJson('/api/route', {
@@ -917,6 +973,24 @@ function buildSourceOwnershipMessage(source) {
     `Citation price USDC: ${source.price}`,
     `Source fingerprint: ${sourceFingerprint(source)}`,
   ].join('\n');
+}
+
+async function linkSocialAccount(account, platform, handle) {
+  const challengePayload = await postJson('/api/auth/challenge', {
+    wallet: account.address,
+    purpose: 'link-social',
+  });
+  const authSignature = await account.signMessage({
+    message: challengePayload.challenge.message,
+  });
+  return postJson('/api/socials/link', {
+    wallet: account.address,
+    ownerWallet: account.address,
+    challengeId: challengePayload.challenge.id,
+    authSignature,
+    platform,
+    handle,
+  });
 }
 
 function buildSourceArchiveMessage(source) {
@@ -1081,12 +1155,55 @@ test('hybrid ownership and trust layer verification', async () => {
     assert.equal(getSocialsPayload.socials[0].platform, 'twitter');
     assert.equal(getSocialsPayload.socials[0].handle, 'alice_writes');
 
-    // 5. Register content and verify it inherits social verification.
+    // 5. Social post free-text paste is blocked (must use linked X URL).
+    const freeTextSocial = await localPostJsonRaw('/api/sources', {
+      title: 'Verified Post',
+      kind: 'Social post',
+      wallet: creatorAccount.address,
+      price: 0.5,
+      content: 'Test trust layer content for social ownership binding.',
+      ownerWallet: creatorAccount.address,
+      ownershipSignature: await creatorAccount.signMessage({
+        message: buildSourceOwnershipMessage({
+          title: 'Verified Post',
+          kind: 'Social post',
+          wallet: creatorAccount.address,
+          price: 0.5,
+          content: 'Test trust layer content for social ownership binding.',
+        }),
+      }),
+    });
+    assert.equal(freeTextSocial.status, 400);
+    assert.match(String(freeTextSocial.payload.error), /X post URL/iu);
+
+    // Wrong X author URL is blocked even if wallet is linked.
+    const wrongAuthor = await localPostJsonRaw('/api/sources', {
+      title: 'Verified Post',
+      kind: 'Social post',
+      wallet: creatorAccount.address,
+      price: 0.5,
+      content: 'Test trust layer content for social ownership binding.',
+      originUrl: 'https://x.com/not_alice/status/999',
+      ownerWallet: creatorAccount.address,
+      ownershipSignature: await creatorAccount.signMessage({
+        message: buildSourceOwnershipMessage({
+          title: 'Verified Post',
+          kind: 'Social post',
+          wallet: creatorAccount.address,
+          price: 0.5,
+          content: 'Test trust layer content for social ownership binding.',
+        }),
+      }),
+    });
+    assert.equal(wrongAuthor.status, 400);
+    assert.match(String(wrongAuthor.payload.error), /linked to @alice_writes/iu);
+
+    // 6. Register content from the linked X URL (platform-bound).
     // On-chain registry writes are real-only: without CONTENT_REGISTRY_ADDRESS
     // or explicit auto-deploy config, the source must not receive a fake tx hash.
     const title = 'Verified Post';
     const kind = 'Social post';
-    const content = 'Test trust layer content';
+    const content = 'Test trust layer content for social ownership binding.';
     const price = 0.5;
 
     const sourcePayload = {
@@ -1103,6 +1220,7 @@ test('hybrid ownership and trust layer verification', async () => {
 
     const regPayload = await localPostJson('/api/sources', {
       ...sourcePayload,
+      originUrl: 'https://x.com/alice_writes/status/123456789',
       ownerWallet: creatorAccount.address,
       ownershipSignature,
       ownershipMessage,
@@ -1112,16 +1230,17 @@ test('hybrid ownership and trust layer verification', async () => {
     assert.equal(regPayload.source.registryStatus, 'not_configured');
     assert.equal(regPayload.source.registryTxHash, null);
     assert.equal(regPayload.source.twitterHandle, 'alice_writes');
+    assert.equal(regPayload.source.contentTrust, 'platform_bound');
     assert.equal(regPayload.source.socialProofStatus, 'none');
     assert.equal(regPayload.source.sociallyVerified, false);
 
-    // 6. Fetch the social proof tweet text for this source.
+    // 7. Fetch the social proof tweet text for this source.
     const proofMeta = await localGetJson(`/api/sources/${regPayload.source.id}/social-proof`);
     assert.equal(proofMeta.fingerprint, regPayload.source.fingerprint);
     assert.match(proofMeta.tweetText, new RegExp(regPayload.source.fingerprint, 'u'));
     assert.equal(proofMeta.socialProofStatus, 'none');
 
-    // 7. Reject a post that does not contain the fingerprint.
+    // 8. Reject a post that does not contain the fingerprint.
     const badChallenge = await localPostJson('/api/auth/challenge', {
       wallet: creatorAccount.address,
       purpose: 'social-verify',
@@ -1139,7 +1258,7 @@ test('hybrid ownership and trust layer verification', async () => {
     assert.equal(badProof.status, 400);
     assert.match(String(badProof.payload.error), /does not include this source fingerprint/iu);
 
-    // 8. Reject a fingerprint post from a different X handle than the linked account.
+    // 9. Reject a fingerprint post from a different X handle than the linked account.
     const wrongHandleChallenge = await localPostJson('/api/auth/challenge', {
       wallet: creatorAccount.address,
       purpose: 'social-verify',
@@ -1160,7 +1279,7 @@ test('hybrid ownership and trust layer verification', async () => {
     assert.equal(wrongHandleProof.status, 400);
     assert.match(String(wrongHandleProof.payload.error), /linked to @alice_writes/iu);
 
-    // 9. Accept a valid mock X post that includes the fingerprint and matching handle.
+    // 10. Accept a valid mock X post that includes the fingerprint and matching handle.
     const goodChallenge = await localPostJson('/api/auth/challenge', {
       wallet: creatorAccount.address,
       purpose: 'social-verify',

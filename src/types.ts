@@ -36,6 +36,10 @@ export type RegistrySource = {
   socialProofHandle?: string | null;
   socialProofVerifiedAt?: string | null;
   sociallyVerified?: boolean;
+  sourceUrl?: string | null;
+  contentClaimHash?: string | null;
+  contentTrust?: 'platform_bound' | 'social_proven' | 'unbound' | string | null;
+  routingEligible?: boolean;
   twitterHandle?: string | null;
   mediumHandle?: string | null;
   status: 'registered' | 'archived';

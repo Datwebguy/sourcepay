@@ -219,6 +219,21 @@ if (!sourceColumns.includes('social_proof_handle')) {
 if (!sourceColumns.includes('social_proof_verified_at')) {
   db.exec('ALTER TABLE sources ADD COLUMN social_proof_verified_at TEXT');
 }
+if (!sourceColumns.includes('source_url')) {
+  db.exec('ALTER TABLE sources ADD COLUMN source_url TEXT');
+}
+if (!sourceColumns.includes('content_claim_hash')) {
+  db.exec('ALTER TABLE sources ADD COLUMN content_claim_hash TEXT');
+}
+if (!sourceColumns.includes('content_trust')) {
+  db.exec("ALTER TABLE sources ADD COLUMN content_trust TEXT DEFAULT 'unbound'");
+}
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_sources_content_claim_hash
+  ON sources(content_claim_hash)
+  WHERE status = 'registered';
+`);
 
 const walletConfigColumns = db
   .prepare("PRAGMA table_info('wallet_config')")
@@ -293,6 +308,9 @@ const sourceSelectSql = `
       social_proof_url AS socialProofUrl,
       social_proof_handle AS socialProofHandle,
       social_proof_verified_at AS socialProofVerifiedAt,
+      source_url AS sourceUrl,
+      content_claim_hash AS contentClaimHash,
+      content_trust AS contentTrust,
       (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'twitter') AS twitterHandle,
       (SELECT handle FROM linked_socials WHERE lower(wallet) = lower(sources.wallet) AND platform = 'medium') AS mediumHandle,
       status,
@@ -323,9 +341,12 @@ const statements = {
       content,
       owner_wallet,
       ownership_signature,
-      ownership_message
+      ownership_message,
+      source_url,
+      content_claim_hash,
+      content_trust
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `),
   getSource: db.prepare(`
     SELECT ${sourceSelectSql}
@@ -342,7 +363,10 @@ const statements = {
       content = ?,
       owner_wallet = ?,
       ownership_signature = ?,
-      ownership_message = ?
+      ownership_message = ?,
+      source_url = ?,
+      content_claim_hash = ?,
+      content_trust = ?
     WHERE id = ?
   `),
   updateSourceRegistry: db.prepare(`
@@ -358,13 +382,29 @@ const statements = {
       social_proof_status = ?,
       social_proof_url = ?,
       social_proof_handle = ?,
-      social_proof_verified_at = ?
+      social_proof_verified_at = ?,
+      content_trust = CASE
+        WHEN ? = 'verified' AND COALESCE(content_trust, 'unbound') = 'unbound' THEN 'social_proven'
+        ELSE content_trust
+      END
     WHERE id = ?
   `),
   deleteSource: db.prepare(`
     UPDATE sources
     SET status = 'archived'
     WHERE id = ?
+  `),
+  findRegisteredClaim: db.prepare(`
+    SELECT
+      id,
+      wallet,
+      title,
+      kind
+    FROM sources
+    WHERE content_claim_hash = ?
+      AND status = 'registered'
+      AND (? = '' OR id != ?)
+    LIMIT 1
   `),
   eligibleSources: db.prepare(`
     SELECT ${sourceSelectSql}
@@ -373,6 +413,10 @@ const statements = {
       AND status = 'registered'
       AND NULLIF(TRIM(owner_wallet), '') IS NOT NULL
       AND NULLIF(TRIM(ownership_signature), '') IS NOT NULL
+      AND (
+        COALESCE(content_trust, 'unbound') IN ('platform_bound', 'social_proven')
+        OR social_proof_status = 'verified'
+      )
     ORDER BY datetime(created_at) ASC
   `),
   getLinkedSocials: db.prepare(`
@@ -942,6 +986,7 @@ function renderBackendHome({ sourceCount, wallet, payment }) {
 
 function normalizeSource(row) {
   const fullContent = row.content ?? '';
+  const contentTrust = row.contentTrust ?? 'unbound';
   const source = {
     id: row.id,
     title: row.title,
@@ -958,6 +1003,13 @@ function normalizeSource(row) {
     socialProofHandle: row.socialProofHandle ?? null,
     socialProofVerifiedAt: row.socialProofVerifiedAt ?? null,
     sociallyVerified: (row.socialProofStatus ?? 'none') === 'verified',
+    sourceUrl: row.sourceUrl ?? null,
+    contentClaimHash: row.contentClaimHash ?? null,
+    contentTrust,
+    routingEligible:
+      contentTrust === 'platform_bound' ||
+      contentTrust === 'social_proven' ||
+      (row.socialProofStatus ?? 'none') === 'verified',
     twitterHandle: row.twitterHandle ?? null,
     mediumHandle: row.mediumHandle ?? null,
     status: row.status,
@@ -990,6 +1042,160 @@ async function readBody(request) {
   }
 }
 
+function contentClaimHash({ kind, content }) {
+  const payload = [
+    String(kind ?? '').trim(),
+    normalizeSourceText(String(content ?? '')).toLowerCase(),
+  ].join('\n');
+  return createHash('sha256').update(payload, 'utf8').digest('hex');
+}
+
+function getLinkedHandle(wallet, platform) {
+  const socials = statements.getLinkedSocials.all(wallet);
+  const match = socials.find((row) => row.platform === platform);
+  return match?.handle ? String(match.handle).replace(/^@/u, '').trim() : null;
+}
+
+function parseMediumProfileUrl(value) {
+  try {
+    const url = new URL(String(value ?? '').trim());
+    const host = url.hostname.toLowerCase().replace(/^www\./u, '');
+    if (host.endsWith('.medium.com') && host !== 'medium.com') {
+      const subdomain = host.replace(/\.medium\.com$/u, '');
+      if (!subdomain || subdomain === 'www') return null;
+      return {
+        handle: subdomain,
+        url: url.toString(),
+      };
+    }
+    if (host !== 'medium.com') return null;
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (!parts[0]) return null;
+    if (parts[0].startsWith('@')) {
+      return {
+        handle: parts[0].slice(1),
+        url: url.toString(),
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function assertContentClaimAvailable(claimHash, excludeSourceId = null) {
+  const excludeId = excludeSourceId ? String(excludeSourceId) : '';
+  const existing = statements.findRegisteredClaim.get(claimHash, excludeId, excludeId);
+  if (!existing) return null;
+  if (excludeSourceId && existing.id === excludeSourceId) return null;
+  return {
+    error:
+      existing.wallet
+        ? 'This content body is already registered by another creator. SourcePay blocks exact copies of existing articles, social posts, and transcripts.'
+        : 'This content body is already registered.',
+  };
+}
+
+function resolveOriginBinding({ kind, wallet, originUrl }) {
+  const linkedTwitter = getLinkedHandle(wallet, 'twitter');
+  const linkedMedium = getLinkedHandle(wallet, 'medium');
+  const rawUrl = String(originUrl ?? '').trim();
+
+  if (kind === 'Social post') {
+    if (!linkedTwitter) {
+      return {
+        error:
+          'Link your X/Twitter handle in the Identity tab before registering a Social post. Social posts must come from your linked X account.',
+      };
+    }
+    if (!rawUrl) {
+      return {
+        error:
+          'Social posts require the public X post URL from your linked account (https://x.com/you/status/...). Free-text paste is not allowed for Social posts.',
+      };
+    }
+    const parsed = parseXStatusUrl(rawUrl);
+    if (!parsed) {
+      return {
+        error:
+          'Social posts must use a public X/Twitter status URL from your linked account.',
+      };
+    }
+    if (parsed.handle.toLowerCase() !== linkedTwitter.toLowerCase()) {
+      return {
+        error: `This X post is from @${parsed.handle}, but your wallet is linked to @${linkedTwitter}. You can only register posts from your linked X account.`,
+      };
+    }
+    return {
+      value: {
+        sourceUrl: parsed.url,
+        contentTrust: 'platform_bound',
+        boundHandle: parsed.handle,
+        boundPlatform: 'twitter',
+      },
+    };
+  }
+
+  if (kind === 'Article') {
+    if (!linkedMedium) {
+      return {
+        error:
+          'Link your Medium handle in the Identity tab before registering an Article. Articles must come from your linked Medium profile.',
+      };
+    }
+    if (!rawUrl) {
+      return {
+        error:
+          'Articles require a Medium URL under your linked profile (https://medium.com/@you/...). Free-text paste is not allowed for Articles.',
+      };
+    }
+    const parsed = parseMediumProfileUrl(rawUrl);
+    if (!parsed) {
+      return {
+        error:
+          'Articles must use a Medium URL under your linked profile (https://medium.com/@you/slug or https://you.medium.com/...).',
+      };
+    }
+    if (parsed.handle.toLowerCase() !== linkedMedium.toLowerCase()) {
+      return {
+        error: `This Medium URL belongs to @${parsed.handle}, but your wallet is linked to @${linkedMedium}. You can only register articles from your linked Medium profile.`,
+      };
+    }
+    return {
+      value: {
+        sourceUrl: parsed.url,
+        contentTrust: 'platform_bound',
+        boundHandle: parsed.handle,
+        boundPlatform: 'medium',
+      },
+    };
+  }
+
+  // Transcript: free-text allowed with lower trust until social proof.
+  if (rawUrl) {
+    if (!isHttpUrl(rawUrl)) {
+      return { error: 'Transcript source URL must be a valid http(s) link.' };
+    }
+    return {
+      value: {
+        sourceUrl: rawUrl,
+        contentTrust: 'unbound',
+        boundHandle: null,
+        boundPlatform: null,
+      },
+    };
+  }
+
+  return {
+    value: {
+      sourceUrl: null,
+      contentTrust: 'unbound',
+      boundHandle: null,
+      boundPlatform: null,
+    },
+  };
+}
+
 async function validateSource(input, existingSource = null) {
   const title = String(input.title ?? '').trim();
   const kind = String(input.kind ?? '').trim();
@@ -998,6 +1204,7 @@ async function validateSource(input, existingSource = null) {
   const price = Number(input.price);
   const ownershipSignature = String(input.ownershipSignature ?? '').trim();
   const ownerWallet = String(input.ownerWallet ?? wallet).trim();
+  const originUrl = String(input.originUrl ?? input.sourceUrl ?? input.url ?? '').trim();
 
   if (!title) return { error: 'Source title is required.' };
   if (!sourceKinds.has(kind)) return { error: 'Unsupported source class.' };
@@ -1006,6 +1213,24 @@ async function validateSource(input, existingSource = null) {
   if (!content) return { error: 'Source content or description is required.' };
   if (!Number.isFinite(price) || price < minUsdcAmount) {
     return { error: `Citation price must be at least ${minUsdcAmount} USDC.` };
+  }
+
+  const binding = resolveOriginBinding({ kind, wallet, originUrl });
+  if (binding.error) return { error: binding.error };
+
+  const claimHash = contentClaimHash({ kind, content });
+  const claimConflict = assertContentClaimAvailable(claimHash, existingSource?.id ?? null);
+  if (claimConflict) return claimConflict;
+
+  // Preserve higher trust if this existing source was already socially proven / platform-bound
+  // and the binding still evaluates as platform_bound.
+  let contentTrust = binding.value.contentTrust;
+  if (
+    existingSource &&
+    existingSource.socialProofStatus === 'verified' &&
+    contentTrust === 'unbound'
+  ) {
+    contentTrust = 'social_proven';
   }
 
   const candidate = { title, kind, wallet, price, content };
@@ -1026,6 +1251,13 @@ async function validateSource(input, existingSource = null) {
         ownerWallet: existingSource.ownerWallet,
         ownershipSignature: existingSource.ownershipSignature,
         ownershipMessage: existingSource.ownershipMessage,
+        sourceUrl: binding.value.sourceUrl ?? existingSource.sourceUrl ?? null,
+        contentClaimHash: claimHash,
+        contentTrust:
+          existingSource.contentTrust === 'platform_bound' ||
+          existingSource.contentTrust === 'social_proven'
+            ? existingSource.contentTrust
+            : contentTrust,
       },
     };
   }
@@ -1056,6 +1288,9 @@ async function validateSource(input, existingSource = null) {
       ownerWallet: wallet,
       ownershipSignature,
       ownershipMessage: message,
+      sourceUrl: binding.value.sourceUrl,
+      contentClaimHash: claimHash,
+      contentTrust,
     },
   };
 }
@@ -2280,10 +2515,13 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
       const rawRelevance = scoreSource(source, uniqueQuestionTokens, questionPhrases);
       const isOnChain = source.registryTxHash && source.registryStatus === 'registered';
       const isTweetVerified = source.socialProofStatus === 'verified';
-      const isHandleLinked = Boolean(source.twitterHandle || source.mediumHandle);
-      // Prefer real tweet fingerprint proofs over handle-only links.
+      const isPlatformBound = source.contentTrust === 'platform_bound';
+      const isSocialProven = source.contentTrust === 'social_proven' || isTweetVerified;
+      // Prefer platform-bound author URLs and real tweet proofs over handle-only links.
       const boost =
-        (isOnChain ? 0.05 : 0) + (isTweetVerified ? 0.08 : isHandleLinked ? 0.03 : 0);
+        (isOnChain ? 0.05 : 0) +
+        (isPlatformBound ? 0.08 : 0) +
+        (isTweetVerified ? 0.08 : isSocialProven ? 0.05 : 0);
       return {
         ...source,
         relevance: rawRelevance + boost,
@@ -2811,6 +3049,9 @@ async function handleRequest(request, response) {
         ownerWallet,
         ownershipSignature,
         ownershipMessage,
+        sourceUrl,
+        contentClaimHash,
+        contentTrust,
       } = parsed.value;
       statements.insertSource.run(
         id,
@@ -2822,6 +3063,9 @@ async function handleRequest(request, response) {
         ownerWallet,
         ownershipSignature,
         ownershipMessage,
+        sourceUrl,
+        contentClaimHash,
+        contentTrust,
       );
 
       // Register content on-chain only when a real registry is configured.
@@ -2952,6 +3196,7 @@ async function handleRequest(request, response) {
             post.url,
             post.handle,
             null,
+            'failed',
             sourceId,
           );
           sendJson(response, 400, {
@@ -2970,6 +3215,7 @@ async function handleRequest(request, response) {
             post.url,
             post.handle,
             null,
+            'failed',
             sourceId,
           );
           sendJson(response, 400, {
@@ -2989,6 +3235,7 @@ async function handleRequest(request, response) {
           post.url,
           post.handle,
           verifiedAt,
+          'verified',
           sourceId,
         );
 
@@ -3062,6 +3309,9 @@ async function handleRequest(request, response) {
         ownerWallet,
         ownershipSignature,
         ownershipMessage,
+        sourceUrl,
+        contentClaimHash,
+        contentTrust,
       } = parsed.value;
       statements.updateSource.run(
         title,
@@ -3072,6 +3322,9 @@ async function handleRequest(request, response) {
         ownerWallet,
         ownershipSignature,
         ownershipMessage,
+        sourceUrl,
+        contentClaimHash,
+        contentTrust,
         sourceId,
       );
       const updatedSource = normalizeSource(statements.getSource.get(sourceId));

@@ -106,6 +106,21 @@ export function SourcePage({
                       Wallet signed
                     </span>
                   )}
+                  {source.contentTrust === 'platform_bound' && (
+                    <span className="rounded-full border border-[#5FBF7A]/25 bg-[#5FBF7A]/10 px-2.5 py-1 text-xs font-bold text-[#8CE0A0]">
+                      Platform bound
+                    </span>
+                  )}
+                  {source.contentTrust === 'unbound' && (
+                    <span className="rounded-full border border-[#F4845F]/25 bg-[#F4845F]/10 px-2.5 py-1 text-xs font-bold text-[#F7B49D]">
+                      Low trust · needs Verify X
+                    </span>
+                  )}
+                  {source.contentTrust === 'social_proven' && (
+                    <span className="rounded-full border border-[#5FBF7A]/25 bg-[#5FBF7A]/10 px-2.5 py-1 text-xs font-bold text-[#8CE0A0]">
+                      Social proven
+                    </span>
+                  )}
                   {source.registryTxHash && source.registryStatus === 'registered' && (
                     <a
                       href={`https://testnet.arcscan.app/tx/${source.registryTxHash}`}
