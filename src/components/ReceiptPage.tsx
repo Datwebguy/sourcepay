@@ -640,47 +640,94 @@ export function ReceiptPage({
                 </div>
 
                 {!isPaidOrSettled && (
-                  <div className="space-y-2">
-                    <button
-                      type="button"
-                      onClick={attemptPayment}
-                      disabled={isPaying || receipt.sources.length === 0}
-                      className="w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
-                    >
-                      {isPaying ? 'Processing payment...' : 'Approve & Pay receipt'}
-                    </button>
-                    {safeConfig?.agentWallet && (
-                      <div className="pt-2 border-t border-white/5">
+                  <div className="space-y-3">
+                    {safeConfig?.agentWallet ? (
+                      <>
                         <button
                           type="button"
                           onClick={attemptAgentPayment}
                           disabled={isPaying || receipt.sources.length === 0}
-                          className="w-full rounded-[8px] bg-[#5FA9FF] px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-35"
+                          className="w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
                         >
-                          {isPaying ? 'Processing Agent Payout...' : 'Pay via Agent Wallet'}
+                          {isPaying ? 'Settling payment…' : 'Pay creators (agent wallet)'}
                         </button>
-                      </div>
+                        <p className="text-[11px] leading-relaxed text-white/45">
+                          Recommended. Settles this receipt on Arc Testnet via the funded agent wallet
+                          (x402 / Circle Gateway). No browser signature prompts.
+                        </p>
+                        <details className="rounded-[8px] border border-white/10 bg-black/20 p-3">
+                          <summary className="cursor-pointer text-[11px] font-bold uppercase tracking-[0.12em] text-white/50 hover:text-white/75">
+                            Advanced: pay with browser wallet
+                          </summary>
+                          <p className="mt-2 text-[11px] leading-relaxed text-white/40">
+                            Uses MetaMask/OKX EIP-712 signing. Can fail if multiple accounts are
+                            connected — prefer agent wallet for demos.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={attemptPayment}
+                            disabled={isPaying || receipt.sources.length === 0}
+                            className="mt-3 w-full rounded-[8px] border border-white/14 bg-white/[0.04] px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-35"
+                          >
+                            {isPaying ? 'Processing…' : 'Approve & Pay with wallet'}
+                          </button>
+                          {connectedWallet.address && (
+                            <p
+                              className={`mt-2 rounded-[8px] border px-3 py-2 text-[11px] font-semibold leading-relaxed ${
+                                walletBalanceCheck.enough === false
+                                  ? 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
+                                  : walletBalanceCheck.enough === true
+                                    ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
+                                    : 'border-white/10 bg-white/[0.035] text-white/45'
+                              }`}
+                            >
+                              {walletBalanceCheck.checking
+                                ? 'Checking wallet USDC…'
+                                : walletBalanceCheck.enough === false
+                                  ? `${maskAddress(connectedWallet.address)} is short on USDC.`
+                                  : walletBalanceCheck.enough === true
+                                    ? `${maskAddress(connectedWallet.address)} has enough USDC.`
+                                    : walletBalanceCheck.error || 'Balance unavailable.'}
+                            </p>
+                          )}
+                        </details>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={attemptPayment}
+                          disabled={isPaying || receipt.sources.length === 0}
+                          className="w-full rounded-[8px] bg-white px-4 py-2.5 text-xs font-extrabold uppercase tracking-[0.12em] text-black transition hover:bg-[#5FA9FF] disabled:cursor-not-allowed disabled:opacity-35"
+                        >
+                          {isPaying ? 'Processing payment…' : 'Approve & Pay receipt'}
+                        </button>
+                        <p className="text-[11px] leading-relaxed text-white/45">
+                          Agent wallet is not configured on this deployment. Connect a browser wallet
+                          with Arc Testnet USDC to settle.
+                        </p>
+                        {connectedWallet.address && (
+                          <p
+                            className={`rounded-[8px] border px-3 py-2 text-xs font-semibold leading-relaxed ${
+                              walletBalanceCheck.enough === false
+                                ? 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
+                                : walletBalanceCheck.enough === true
+                                  ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
+                                  : 'border-white/10 bg-white/[0.035] text-white/45'
+                            }`}
+                          >
+                            {walletBalanceCheck.checking
+                              ? 'Checking wallet USDC balance…'
+                              : walletBalanceCheck.enough === false
+                                ? `Connected wallet ${maskAddress(connectedWallet.address)} USDC is below the quote.`
+                                : walletBalanceCheck.enough === true
+                                  ? `Connected wallet ${maskAddress(connectedWallet.address)} has enough USDC.`
+                                  : walletBalanceCheck.error || 'Wallet USDC balance could not be checked.'}
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
-                )}
-                {connectedWallet.address && (
-                  <p
-                    className={`mt-3 rounded-[8px] border px-3 py-2 text-xs font-semibold leading-relaxed ${
-                      walletBalanceCheck.enough === false
-                        ? 'border-[#F4845F]/35 bg-[#F4845F]/12 text-[#F7B49D]'
-                        : walletBalanceCheck.enough === true
-                          ? 'border-[#5FBF7A]/30 bg-[#5FBF7A]/10 text-[#8CE0A0]'
-                          : 'border-white/10 bg-white/[0.035] text-white/45'
-                    }`}
-                  >
-                    {walletBalanceCheck.checking
-                      ? 'Checking wallet USDC balance...'
-                      : walletBalanceCheck.enough === false
-                        ? `Connected wallet ${maskAddress(connectedWallet.address)} USDC is below the quote. Fund it or switch account in your wallet, then reconnect.`
-                        : walletBalanceCheck.enough === true
-                          ? `Connected wallet ${maskAddress(connectedWallet.address)} has enough USDC for this receipt.`
-                          : walletBalanceCheck.error || 'Wallet USDC balance could not be checked.'}
-                  </p>
                 )}
                 <div className="mt-3 rounded-[8px] border border-white/10 bg-white/[0.025] p-3">
                   <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/38">
