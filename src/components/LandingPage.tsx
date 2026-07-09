@@ -70,6 +70,7 @@ export function LandingPage({ onLaunch }: { onLaunch: () => void }) {
         <span>Arc Testnet</span>
         <span>USDC</span>
         <span>x402</span>
+        <span>Verified ownership</span>
       </div>
 
       <div className="absolute inset-0 z-[3]">
@@ -134,13 +135,14 @@ export function LandingPage({ onLaunch }: { onLaunch: () => void }) {
         })}
       </div>
 
-      <div className="absolute bottom-5 left-4 z-[60] max-w-[220px] sm:bottom-20 sm:left-24 sm:max-w-[340px]">
+      <div className="absolute bottom-5 left-4 z-[60] max-w-[220px] sm:bottom-20 sm:left-24 sm:max-w-[360px]">
         <p className="mb-2 text-base font-bold uppercase tracking-normal text-white opacity-95 sm:mb-3 sm:text-[22px]">
-          AI citations that pay
+          Own the cite. Get paid.
         </p>
         <p className="mb-5 hidden text-sm leading-[1.6] text-white opacity-85 sm:block">
-          Agents buy the source material they use: articles, posts, transcripts,
-          and receipts settled as USDC nanopayments on Arc Testnet.
+          Creators prove ownership with wallet signatures, X/Medium binding, and
+          on-chain fingerprints. Agents route citations and settle nanopayments
+          in USDC on Arc Testnet via x402.
         </p>
         <div className="flex gap-3">
           <button
