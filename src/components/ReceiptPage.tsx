@@ -260,16 +260,20 @@ export function ReceiptPage({
       }
       await ensureArcNetwork(provider);
 
-      // Up to 2 attempts: if the wallet signs with a different selected account than
-      // eth_accounts reported, rebuild payment requirements for the true signer and retry.
-      let payer = await resolvePayingAccount(provider);
+      // If the wallet signs with a different key than eth_accounts reported, we lock onto
+      // the recovered signer for a second prepare+sign pass (do NOT re-call eth_requestAccounts,
+      // which often returns the stale "connected" account and overwrites the true signer).
+      let forcedPayer: string | null = null;
       let payments: Array<Record<string, unknown>> = [];
-      let preparedFor = payer;
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        payer = await resolvePayingAccount(provider);
-        preparedFor = payer;
-        setPaymentNotice(`Preparing payment with ${maskAddress(payer)}…`);
+        const payer = forcedPayer ?? (await resolvePayingAccount(provider));
+        const preparedFor = payer;
+        setPaymentNotice(
+          attempt === 0
+            ? `Preparing payment with ${maskAddress(payer)}…`
+            : `Rebuilding payment for the account that signed (${maskAddress(payer)})…`,
+        );
 
         const requirementsPayload = await requestJson<ReceiptPaymentRequirements>(
           apiPath(`/api/receipts/${id}/payment-requirements`, {
@@ -286,26 +290,22 @@ export function ReceiptPage({
             return;
           }
 
-          // Re-read active account immediately before each signature prompt.
-          const activeBeforeSign = await resolvePayingAccount(provider);
-          if (!sameWalletAddress(activeBeforeSign, payer)) {
-            restartWithPayer = activeBeforeSign;
-            break;
-          }
-
           const { paymentPayloadTemplate, ...signableTypedData } = item.typedData;
-          const expectedFrom = String(
+          const messageFrom = String(
             (signableTypedData as { message?: { from?: string } }).message?.from ?? payer,
           );
-          if (!sameWalletAddress(expectedFrom, payer)) {
-            restartWithPayer = expectedFrom;
+          // Always sign with the address embedded in typed data (authorization.from).
+          const signAddress = messageFrom || payer;
+
+          if (!sameWalletAddress(signAddress, payer)) {
+            restartWithPayer = signAddress;
             break;
           }
 
           const signature = String(
             await provider.request({
               method: 'eth_signTypedData_v4',
-              params: [payer, JSON.stringify(signableTypedData)],
+              params: [signAddress, JSON.stringify(signableTypedData)],
             }),
           );
 
@@ -319,9 +319,7 @@ export function ReceiptPage({
             signature,
           });
 
-          if (recovered && !sameWalletAddress(recovered, payer)) {
-            // Wallet signed with a different account than the typed-data `from`.
-            // Rebuild requirements for the actual signer and retry once.
+          if (recovered && !sameWalletAddress(recovered, signAddress)) {
             restartWithPayer = recovered;
             break;
           }
@@ -359,13 +357,13 @@ export function ReceiptPage({
         if (restartWithPayer) {
           if (attempt === 0) {
             setPaymentNotice(
-              `Wallet signed with ${maskAddress(restartWithPayer)} instead of ${maskAddress(preparedFor)}. Rebuilding payment for the selected account…`,
+              `Wallet used ${maskAddress(restartWithPayer)} to sign (not ${maskAddress(preparedFor)}). Rebuilding payment for that account — approve again…`,
             );
-            payer = restartWithPayer;
+            forcedPayer = restartWithPayer;
             continue;
           }
           throw new Error(
-            `Payment signature was produced by ${maskAddress(restartWithPayer)}, but this receipt was prepared for ${maskAddress(preparedFor)}. In your wallet, select ${maskAddress(restartWithPayer)} as the active account and try Approve & Pay again.`,
+            `Payment signature was produced by ${maskAddress(restartWithPayer)}, but typed data was for ${maskAddress(preparedFor)}. Open your wallet, switch the active account to ${maskAddress(restartWithPayer)}, then click Approve & Pay once more.`,
           );
         }
 
