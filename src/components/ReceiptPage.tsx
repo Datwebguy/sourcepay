@@ -21,10 +21,12 @@ import {
   formatUsdcAtomic,
   getEthereumProvider,
   resolvePayingAccount,
+  listProviderAccounts,
   sameWalletAddress,
   recoverPaymentSignatureAddress,
   signPaymentTypedData,
   normalizeEvmAddress,
+  formatAddressList,
   ensureArcNetwork,
   readUsdcBalance,
   requestJson,
@@ -165,16 +167,15 @@ export function ReceiptPage({
       error: '',
     }));
 
-    // Prefer the wallet's currently selected account for balance (matches signing).
-    resolvePayingAccount(provider)
-      .catch(() => connectedWallet.address as string)
+    // Prefer the app-connected wallet when it is still authorized (matches signing).
+    resolvePayingAccount(provider, connectedWallet.address)
       .then((activeWallet) =>
         ensureArcNetwork(provider).then(() =>
           readUsdcBalance({
             provider,
             receipt: receipt as Receipt,
             wallet: activeWallet,
-          }),
+          }).then((result) => ({ ...result, activeWallet })),
         ),
       )
       .then((result) => {
@@ -262,22 +263,29 @@ export function ReceiptPage({
       }
       await ensureArcNetwork(provider);
 
-      // If the wallet signs with a different key than eth_accounts reported, lock onto
-      // the recovered signer for a second prepare+sign pass. Do not re-call
-      // eth_requestAccounts on that pass — it often returns a stale connected account.
-      let forcedPayer: string | null = null;
+      // Prefer the wallet the app already shows as connected (and has balance for).
+      // Only fall back to eth_accounts[0] when the connected address is not authorized.
+      const preferred = connectedWallet.address;
+      let payer: string = await resolvePayingAccount(provider, preferred);
+      const authorizedAccounts = await listProviderAccounts(provider);
+
+      setPaymentNotice(
+        `Preparing payment with ${maskAddress(payer)}` +
+          (authorizedAccounts.length > 1
+            ? ` (wallet has ${authorizedAccounts.length} accounts: ${formatAddressList(authorizedAccounts)})`
+            : '') +
+          '…',
+      );
+
+      // Single prepare+sign path. If the recovered signer differs, only auto-retry when
+      // that recovered address is actually authorized in the extension — never invent
+      // a non-existent account for the user to "select".
       let payments: Array<Record<string, unknown>> = [];
+      let attemptPayer = payer;
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const payer: string = forcedPayer
-          ? await normalizeEvmAddress(forcedPayer, 'Recovered signer')
-          : await resolvePayingAccount(provider);
-        const preparedFor: string = payer;
-        setPaymentNotice(
-          attempt === 0
-            ? `Preparing payment with ${maskAddress(payer)}…`
-            : `Rebuilding payment for the account that signed (${maskAddress(payer)})…`,
-        );
+        payer = attemptPayer;
+        setPaymentNotice(`Preparing payment with ${maskAddress(payer)}…`);
 
         const requirementsPayload: ReceiptPaymentRequirements =
           await requestJson<ReceiptPaymentRequirements>(
@@ -292,7 +300,7 @@ export function ReceiptPage({
         }
 
         payments = [];
-        let restartWithPayer: string | null = null;
+        let recoveredMismatch: string | null = null;
 
         for (const item of requirementsPayload.requirements) {
           if (!item.typedData || typeof item.typedData !== 'object') {
@@ -306,14 +314,9 @@ export function ReceiptPage({
             unknown
           > & { paymentPayloadTemplate?: Record<string, unknown> };
 
+          // Force message.from = payer inside signPaymentTypedData (server echo is ignored).
           const { signature, typedData: signedTypedData, signAddress } =
             await signPaymentTypedData(provider, payer, restTypedData as Record<string, unknown>);
-
-          if (!sameWalletAddress(signAddress, payer)) {
-            // Server prepared a different from address — rebuild with it.
-            restartWithPayer = signAddress;
-            break;
-          }
 
           const recovered: string | null = await recoverPaymentSignatureAddress({
             typedData: signedTypedData,
@@ -321,11 +324,10 @@ export function ReceiptPage({
           });
 
           if (recovered && !sameWalletAddress(recovered, signAddress)) {
-            restartWithPayer = recovered;
+            recoveredMismatch = recovered;
             break;
           }
 
-          // Prefer authorization fields we actually signed (normalized addresses).
           const signedAuthorization = signedTypedData.message;
           const templatePayload =
             paymentPayloadTemplate && typeof paymentPayloadTemplate === 'object'
@@ -353,16 +355,24 @@ export function ReceiptPage({
           });
         }
 
-        if (restartWithPayer) {
-          if (attempt === 0) {
+        if (recoveredMismatch) {
+          const authorizedNow = await listProviderAccounts(provider);
+          const recoveredIsAuthorized = authorizedNow.some((account) =>
+            sameWalletAddress(account, recoveredMismatch),
+          );
+
+          if (attempt === 0 && recoveredIsAuthorized) {
             setPaymentNotice(
-              `Wallet used ${maskAddress(restartWithPayer)} to sign (not ${maskAddress(preparedFor)}). Rebuilding payment for that account — approve again…`,
+              `Wallet signed with ${maskAddress(recoveredMismatch)} instead of ${maskAddress(payer)}. Rebuilding for that authorized account — approve again…`,
             );
-            forcedPayer = restartWithPayer;
+            attemptPayer = await normalizeEvmAddress(recoveredMismatch, 'Recovered signer');
             continue;
           }
+
           throw new Error(
-            `Payment signature was produced by ${maskAddress(restartWithPayer)}, but typed data was for ${maskAddress(preparedFor)}. Open your wallet, switch the active account to ${maskAddress(restartWithPayer)}, then click Approve & Pay once more.`,
+            `Wallet produced a signature from ${maskAddress(recoveredMismatch)}, which is not the paying account ${maskAddress(payer)}. ` +
+              `Authorized accounts: ${formatAddressList(authorizedNow)}. ` +
+              `In your wallet extension, select ${maskAddress(payer)} as the active account (the one SourcePay connected), then try Approve & Pay again.`,
           );
         }
 
@@ -666,9 +676,9 @@ export function ReceiptPage({
                     {walletBalanceCheck.checking
                       ? 'Checking wallet USDC balance...'
                       : walletBalanceCheck.enough === false
-                        ? `Active wallet ${maskAddress(connectedWallet.address)} USDC is below the quote. Switch the selected account in your wallet if needed.`
+                        ? `Connected wallet ${maskAddress(connectedWallet.address)} USDC is below the quote. Fund it or switch account in your wallet, then reconnect.`
                         : walletBalanceCheck.enough === true
-                          ? `Wallet ${maskAddress(connectedWallet.address)} has enough USDC for this receipt.`
+                          ? `Connected wallet ${maskAddress(connectedWallet.address)} has enough USDC for this receipt.`
                           : walletBalanceCheck.error || 'Wallet USDC balance could not be checked.'}
                   </p>
                 )}

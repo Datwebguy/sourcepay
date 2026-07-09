@@ -167,11 +167,9 @@ export async function getActiveProviderAccount(provider: EthereumProvider) {
 }
 
 /**
- * Resolve the wallet account that will actually pay/sign.
- * Always re-requests accounts so MetaMask/WalletConnect use the currently selected account,
- * not a stale app connection address.
+ * List authorized provider accounts (normalized). Empty if none connected.
  */
-export async function resolvePayingAccount(provider: EthereumProvider): Promise<string> {
+export async function listProviderAccounts(provider: EthereumProvider): Promise<string[]> {
   let accounts: unknown = [];
   try {
     accounts = await provider.request({ method: 'eth_requestAccounts' });
@@ -179,20 +177,58 @@ export async function resolvePayingAccount(provider: EthereumProvider): Promise<
     accounts = await provider.request({ method: 'eth_accounts' }).catch(() => []);
   }
 
-  const list = Array.isArray(accounts)
+  const raw = Array.isArray(accounts)
     ? accounts.map((value) => String(value ?? '').trim()).filter(Boolean)
     : [];
-  if (list.length === 0) {
+
+  const normalized: string[] = [];
+  for (const account of raw) {
+    try {
+      normalized.push(await normalizeEvmAddress(account, 'Wallet account'));
+    } catch {
+      // skip invalid entries from broken providers
+    }
+  }
+  return normalized;
+}
+
+/**
+ * Resolve the wallet account that will actually pay/sign.
+ *
+ * Prefer the app's connected wallet when it is still authorized in the provider.
+ * Falling back to eth_accounts[0] alone is unsafe: MetaMask often returns a different
+ * (stale/secondary) account first, which produces a signer the user "does not have selected".
+ */
+export async function resolvePayingAccount(
+  provider: EthereumProvider,
+  preferredAddress?: string | null,
+): Promise<string> {
+  const accounts = await listProviderAccounts(provider);
+  if (accounts.length === 0) {
     throw new Error(
       'No wallet account is selected. Open your wallet, choose the paying account, and try again.',
     );
   }
 
-  return normalizeEvmAddress(list[0], 'Paying wallet');
+  if (preferredAddress && isEvmAddressString(preferredAddress)) {
+    const preferred = await normalizeEvmAddress(preferredAddress, 'Connected wallet');
+    const match = accounts.find((account) => account.toLowerCase() === preferred.toLowerCase());
+    if (match) return match;
+  }
+
+  return accounts[0];
 }
 
 export function sameWalletAddress(left: string | null | undefined, right: string | null | undefined) {
   return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
+}
+
+export function formatAddressList(addresses: string[], limit = 3) {
+  if (addresses.length === 0) return 'none';
+  return addresses
+    .slice(0, limit)
+    .map((address) => maskAddress(address))
+    .join(', ');
 }
 
 export type PaymentTypedData = {
@@ -249,6 +285,8 @@ export function sanitizePaymentTypedData(raw: Record<string, unknown>): PaymentT
 /**
  * Sign payment typed data. Uses lowercase address in the first param (MetaMask-safe)
  * and validates from/to before calling the wallet.
+ *
+ * `payer` is the source of truth for message.from (not whatever the server echoed).
  */
 export async function signPaymentTypedData(
   provider: EthereumProvider,
@@ -256,22 +294,36 @@ export async function signPaymentTypedData(
   rawTypedData: Record<string, unknown>,
 ): Promise<{ signature: string; typedData: PaymentTypedData; signAddress: string }> {
   const typedData = sanitizePaymentTypedData(rawTypedData);
-  const signAddress = await normalizeEvmAddress(
-    String(typedData.message.from ?? payer),
-    'Payment signer (from)',
+  // Always sign as the resolved paying account — never invent a different "from".
+  const signAddress = await normalizeEvmAddress(payer, 'Paying wallet');
+  const payTo = await normalizeEvmAddress(String(typedData.message.to ?? ''), 'Creator payout wallet');
+  const verifyingContract = await normalizeEvmAddress(
+    String(typedData.domain.verifyingContract ?? ''),
+    'Gateway verifying contract',
   );
-  const payTo = await normalizeEvmAddress(String(typedData.message.to ?? ''), 'Creator payTo');
 
+  // Force authorization.from to the account we will actually request a signature from.
   typedData.message.from = signAddress;
   typedData.message.to = payTo;
+  typedData.domain.verifyingContract = verifyingContract;
 
-  if (!typedData.domain.verifyingContract || !isEvmAddressString(String(typedData.domain.verifyingContract))) {
-    throw new Error('Payment domain verifyingContract is missing. Refresh the receipt and try again.');
+  // Refuse to call MetaMask with an account it does not have authorized.
+  const authorized = await listProviderAccounts(provider);
+  const isAuthorized = authorized.some(
+    (account) => account.toLowerCase() === signAddress.toLowerCase(),
+  );
+  if (!isAuthorized) {
+    throw new Error(
+      `Paying account ${maskAddress(signAddress)} is not authorized in your wallet extension. ` +
+        `Connected accounts: ${formatAddressList(authorized)}. ` +
+        `In MetaMask/OKX, switch to the account that SourcePay shows as connected, then reconnect and try again.`,
+    );
   }
-  if (!typedData.message.nonce || !String(typedData.message.nonce).startsWith('0x')) {
+
+  if (!typedData.message.nonce || !/^0x[0-9a-fA-F]{64}$/.test(String(typedData.message.nonce))) {
     throw new Error('Payment authorization nonce is missing. Refresh the receipt and try again.');
   }
-  if (!typedData.message.value) {
+  if (!typedData.message.value || !/^\d+$/.test(String(typedData.message.value))) {
     throw new Error('Payment amount is missing. Refresh the receipt and try again.');
   }
 
@@ -292,9 +344,15 @@ export async function signPaymentTypedData(
     return { signature, typedData, signAddress };
   } catch (error) {
     const message = (error as Error)?.message || String(error);
+    // MetaMask uses this phrase for several invalid-address cases (signer OR message fields).
+    // Do not claim the user must "select" an account that may not exist in their wallet.
     if (/must provide an Ethereum address/i.test(message)) {
       throw new Error(
-        `Wallet rejected the signer address ${maskAddress(signAddress)}. Open your wallet, select that account (or reconnect), then try Approve & Pay again.`,
+        `Wallet could not sign this payment (invalid address parameter). ` +
+          `Paying as ${maskAddress(signAddress)}, creator payTo ${maskAddress(payTo)}, ` +
+          `authorized accounts: ${formatAddressList(authorized)}. ` +
+          `Reconnect the same wallet SourcePay shows, then try Approve & Pay again. ` +
+          `Details: ${message}`,
       );
     }
     if (/user rejected|denied|cancelled|canceled/i.test(message)) {
