@@ -617,6 +617,23 @@ const statements = {
     WHERE expires_at < unixepoch() - 3600
        OR consumed_at < unixepoch() - 3600
   `),
+  platformStats: db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM sources WHERE status = 'registered') AS registeredSources,
+      (SELECT COUNT(*) FROM research_runs WHERE payment_status IN ('paid', 'settled')) AS paidReceipts,
+      (
+        SELECT COUNT(*)
+        FROM selected_sources ss
+        INNER JOIN research_runs rr ON rr.id = ss.run_id
+        WHERE rr.payment_status IN ('paid', 'settled')
+      ) AS paidCitations,
+      (
+        SELECT COALESCE(SUM(total_spend), 0)
+        FROM research_runs
+        WHERE payment_status IN ('paid', 'settled')
+      ) AS totalPaidUsdc,
+      (SELECT COUNT(*) FROM payment_settlements) AS onChainSettlements
+  `),
   listRuns: db.prepare(`
     SELECT
       id,
@@ -3008,6 +3025,20 @@ async function handleRequest(request, response) {
       }
       const socials = statements.getLinkedSocials.all(wallet);
       sendJson(response, 200, { socials });
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/platform-stats') {
+      const row = statements.platformStats.get() ?? {};
+      sendJson(response, 200, {
+        stats: {
+          registeredSources: Number(row.registeredSources ?? 0),
+          paidReceipts: Number(row.paidReceipts ?? 0),
+          paidCitations: Number(row.paidCitations ?? 0),
+          totalPaidUsdc: Number(row.totalPaidUsdc ?? 0),
+          onChainSettlements: Number(row.onChainSettlements ?? 0),
+        },
+      });
       return;
     }
 

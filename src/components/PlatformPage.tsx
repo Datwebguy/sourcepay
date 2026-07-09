@@ -80,6 +80,13 @@ export function PlatformPage({
   const [policySavedMessage, setPolicySavedMessage] = useState('');
   const [sources, setSources] = useState<RegistrySource[]>([]);
   const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [platformStats, setPlatformStats] = useState({
+    registeredSources: 0,
+    paidReceipts: 0,
+    paidCitations: 0,
+    totalPaidUsdc: 0,
+    onChainSettlements: 0,
+  });
   const [paymentReadiness, setPaymentReadiness] = useState<PaymentReadiness | null>(null);
   const [safeConfig, setSafeConfig] = useState<SafeConfig | null>(null);
   const [receipt, setReceipt] = useState<Receipt | null>(null);
@@ -106,6 +113,11 @@ export function PlatformPage({
   const activeReceipt = receipt;
   const selectedSources = activeReceipt?.sources ?? [];
   const totalSpend = activeReceipt?.totalSpend ?? 0;
+  // Platform-wide totals from paid on-chain settlements (not just this session's quote).
+  const registeredSourcesCount = Math.max(platformStats.registeredSources, sources.length);
+  const paidCitationsCount = platformStats.paidCitations;
+  const totalPaidUsdc = platformStats.totalPaidUsdc;
+  const paidReceiptsCount = platformStats.paidReceipts;
   const walletBalanceCopy = walletBalanceCheck.checking
     ? 'Checking balance'
     : walletBalanceCheck.balance !== null
@@ -275,10 +287,35 @@ export function PlatformPage({
     setReceipts(payload.receipts);
   };
 
+  const refreshPlatformStats = async () => {
+    const payload = await requestJson<{
+      stats: {
+        registeredSources: number;
+        paidReceipts: number;
+        paidCitations: number;
+        totalPaidUsdc: number;
+        onChainSettlements: number;
+      };
+    }>('/api/platform-stats');
+    setPlatformStats(payload.stats);
+  };
+
   useEffect(() => {
     refreshReceipts().catch((requestError: Error) => {
       setError(requestError.message);
     });
+    refreshPlatformStats().catch((requestError: Error) => {
+      setError(requestError.message);
+    });
+  }, []);
+
+  // Keep platform totals fresh while the console is open (picks up paid receipts).
+  useEffect(() => {
+    const timerId = window.setInterval(() => {
+      refreshPlatformStats().catch(() => undefined);
+      refreshReceipts().catch(() => undefined);
+    }, 12_000);
+    return () => window.clearInterval(timerId);
   }, []);
 
   const toggleSourceKind = (kind: SourceKind) => {
@@ -313,6 +350,7 @@ export function PlatformPage({
         payload.receipt,
         ...current.filter((item) => item.id !== payload.receipt.id),
       ]);
+      refreshPlatformStats().catch(() => undefined);
     } catch (requestError) {
       setError((requestError as Error).message);
     } finally {
@@ -439,6 +477,7 @@ export function PlatformPage({
         }),
       });
       setReceipts(payload.receipts);
+      await refreshPlatformStats().catch(() => undefined);
     } catch (requestError) {
       setError((requestError as Error).message);
     }
@@ -568,17 +607,17 @@ export function PlatformPage({
             <div className="mb-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               <MetricCard
                 label="Registered sources"
-                value={sources.length.toString()}
+                value={registeredSourcesCount.toString()}
                 icon={Database}
               />
               <MetricCard
-                label="Selected sources"
-                value={selectedSources.length.toString()}
+                label="Paid citations"
+                value={paidCitationsCount.toString()}
                 icon={Filter}
               />
               <MetricCard
-                label={activeReceipt?.paymentStatus === 'paid' || activeReceipt?.paymentStatus === 'settled' ? 'Paid' : 'Quoted spend'}
-                value={`${formatUsd(totalSpend)} USDC`}
+                label="Total paid"
+                value={`${formatUsd(totalPaidUsdc)} USDC`}
                 icon={Wallet}
               />
               <MetricCard
@@ -587,6 +626,16 @@ export function PlatformPage({
                 icon={Server}
               />
             </div>
+            {(paidReceiptsCount > 0 || platformStats.onChainSettlements > 0) && (
+              <p className="mb-3 text-[11px] font-semibold text-white/40">
+                Platform activity: {paidReceiptsCount} paid receipt
+                {paidReceiptsCount === 1 ? '' : 's'} · {platformStats.onChainSettlements} on-chain
+                settlement{platformStats.onChainSettlements === 1 ? '' : 's'}
+                {activeReceipt
+                  ? ` · Current quote: ${selectedSources.length} source${selectedSources.length === 1 ? '' : 's'} / ${formatUsd(totalSpend)} USDC`
+                  : ''}
+              </p>
+            )}
 
             {activeTab === 'Requests' && (
               <div className="grid gap-4 xl:grid-cols-[400px_minmax(0,1fr)]">
