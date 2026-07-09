@@ -372,7 +372,21 @@ function createSourcePaymentRequirements(source) {
 }
 
 function createSigningTypedData({ payer, requirements, source }) {
+  if (!isEvmAddress(payer)) {
+    throw new Error('Payment payer must be a valid Ethereum address.');
+  }
+  if (!isEvmAddress(requirements.payTo)) {
+    throw new Error('Creator payout wallet on this source is not a valid Ethereum address.');
+  }
+  if (!isEvmAddress(requirements.extra?.verifyingContract)) {
+    throw new Error('Gateway verifying contract is not configured correctly.');
+  }
+
   const chainId = Number(requirements.network.split(':')[1]);
+  if (!Number.isFinite(chainId) || chainId <= 0) {
+    throw new Error('Payment network chain id is invalid.');
+  }
+
   const now = Math.floor(Date.now() / 1000);
   const validAfter = String(now - 600);
   const validBefore = String(
@@ -381,7 +395,7 @@ function createSigningTypedData({ payer, requirements, source }) {
   const authorization = {
     from: getAddress(payer),
     to: getAddress(requirements.payTo),
-    value: requirements.amount,
+    value: String(requirements.amount),
     validAfter,
     validBefore,
     nonce: `0x${randomBytes(32).toString('hex')}`,

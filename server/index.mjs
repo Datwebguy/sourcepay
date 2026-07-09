@@ -3473,6 +3473,22 @@ async function handleRequest(request, response) {
         return;
       }
 
+      let requirements;
+      try {
+        requirements = createReceiptSigningRequests(receipt, payer || null);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Could not prepare payment requirements.';
+        logEvent('warn', 'payment_requirements.failed', {
+          ...requestLogFields(request, url),
+          receiptId: maskIdentifier(receipt.id),
+          payer: maskAddress(payer),
+          reason: message,
+        });
+        sendJson(response, 400, { error: message });
+        return;
+      }
+
       logEvent('info', 'payment_requirements.generated', {
         ...requestLogFields(request, url),
         receiptId: maskIdentifier(receipt.id),
@@ -3483,7 +3499,7 @@ async function handleRequest(request, response) {
         receiptId: receipt.id,
         totalSpend: receipt.totalSpend,
         payer: payer || null,
-        requirements: createReceiptSigningRequests(receipt, payer || null),
+        requirements,
       });
       return;
     }

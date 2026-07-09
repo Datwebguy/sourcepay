@@ -23,6 +23,8 @@ import {
   resolvePayingAccount,
   sameWalletAddress,
   recoverPaymentSignatureAddress,
+  signPaymentTypedData,
+  normalizeEvmAddress,
   ensureArcNetwork,
   readUsdcBalance,
   requestJson,
@@ -260,17 +262,16 @@ export function ReceiptPage({
       }
       await ensureArcNetwork(provider);
 
-      // If the wallet signs with a different key than eth_accounts reported, we lock onto
-      // the recovered signer for a second prepare+sign pass (do NOT re-call eth_requestAccounts,
-      // which often returns the stale "connected" account and overwrites the true signer).
+      // If the wallet signs with a different key than eth_accounts reported, lock onto
+      // the recovered signer for a second prepare+sign pass. Do not re-call
+      // eth_requestAccounts on that pass — it often returns a stale connected account.
       let forcedPayer: string | null = null;
       let payments: Array<Record<string, unknown>> = [];
 
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        const resolvedPayer: string = forcedPayer
-          ? forcedPayer
+        const payer: string = forcedPayer
+          ? await normalizeEvmAddress(forcedPayer, 'Recovered signer')
           : await resolvePayingAccount(provider);
-        const payer: string = resolvedPayer;
         const preparedFor: string = payer;
         setPaymentNotice(
           attempt === 0
@@ -285,45 +286,37 @@ export function ReceiptPage({
               payer,
             }),
           );
+
+        if (!requirementsPayload.requirements?.length) {
+          throw new Error('No payment requirements were returned for this receipt.');
+        }
+
         payments = [];
         let restartWithPayer: string | null = null;
 
         for (const item of requirementsPayload.requirements) {
-          if (!item.typedData) {
-            setPaymentNotice('This receipt could not be prepared for payment.');
-            return;
+          if (!item.typedData || typeof item.typedData !== 'object') {
+            throw new Error(
+              'This receipt could not be prepared for payment (missing signing data). Refresh and try again.',
+            );
           }
 
-          const { paymentPayloadTemplate, ...restTypedData } = item.typedData;
-          const signableTypedData: {
-            domain: Record<string, unknown>;
-            types: Record<string, unknown>;
-            primaryType: string;
-            message: Record<string, unknown>;
-          } = restTypedData as {
-            domain: Record<string, unknown>;
-            types: Record<string, unknown>;
-            primaryType: string;
-            message: Record<string, unknown>;
-          };
-          const messageFrom: string = String(signableTypedData.message?.from ?? payer);
-          // Always sign with the address embedded in typed data (authorization.from).
-          const signAddress: string = messageFrom || payer;
+          const { paymentPayloadTemplate, ...restTypedData } = item.typedData as Record<
+            string,
+            unknown
+          > & { paymentPayloadTemplate?: Record<string, unknown> };
+
+          const { signature, typedData: signedTypedData, signAddress } =
+            await signPaymentTypedData(provider, payer, restTypedData as Record<string, unknown>);
 
           if (!sameWalletAddress(signAddress, payer)) {
+            // Server prepared a different from address — rebuild with it.
             restartWithPayer = signAddress;
             break;
           }
 
-          const signature = String(
-            await provider.request({
-              method: 'eth_signTypedData_v4',
-              params: [signAddress, JSON.stringify(signableTypedData)],
-            }),
-          );
-
           const recovered: string | null = await recoverPaymentSignatureAddress({
-            typedData: signableTypedData,
+            typedData: signedTypedData,
             signature,
           });
 
@@ -332,6 +325,8 @@ export function ReceiptPage({
             break;
           }
 
+          // Prefer authorization fields we actually signed (normalized addresses).
+          const signedAuthorization = signedTypedData.message;
           const templatePayload =
             paymentPayloadTemplate && typeof paymentPayloadTemplate === 'object'
               ? paymentPayloadTemplate
@@ -340,10 +335,6 @@ export function ReceiptPage({
             templatePayload?.payload && typeof templatePayload.payload === 'object'
               ? (templatePayload.payload as Record<string, unknown>)
               : {};
-          const templateAuthorization =
-            templateInnerPayload.authorization && typeof templateInnerPayload.authorization === 'object'
-              ? (templateInnerPayload.authorization as Record<string, unknown>)
-              : item.typedData.message;
 
           payments.push({
             sourceId: item.sourceId,
@@ -352,12 +343,12 @@ export function ReceiptPage({
                   ...templatePayload,
                   payload: {
                     ...templateInnerPayload,
-                    authorization: templateAuthorization,
+                    authorization: signedAuthorization,
                     signature,
                   },
                 }
               : undefined,
-            authorization: templatePayload ? undefined : item.typedData.message,
+            authorization: templatePayload ? undefined : signedAuthorization,
             signature: templatePayload ? undefined : signature,
           });
         }

@@ -70,12 +70,19 @@ export async function readUsdcBalance({
   receipt: Receipt;
   wallet: string;
 }) {
+  const normalizedWallet = await normalizeEvmAddress(wallet, 'Balance wallet');
   const payload = await requestJson<ReceiptPaymentRequirements>(
-    `/api/receipts/${receipt.id}/payment-requirements${receiptAccessQuery(receipt)}`,
+    apiPath(`/api/receipts/${receipt.id}/payment-requirements`, {
+      access: receipt.accessToken,
+      payer: normalizedWallet,
+    }),
   );
   const firstRequirement = payload.requirements[0]?.requirements;
-  if (!firstRequirement) {
+  if (!firstRequirement?.asset) {
     throw new Error('No creator payment requirements were found for this receipt.');
+  }
+  if (!isEvmAddressString(firstRequirement.asset)) {
+    throw new Error('USDC contract address on this receipt is invalid.');
   }
 
   const required = payload.requirements.reduce(
@@ -88,7 +95,7 @@ export async function readUsdcBalance({
       params: [
         {
           to: firstRequirement.asset,
-          data: encodeBalanceOf(wallet),
+          data: encodeBalanceOf(normalizedWallet),
         },
         'latest',
       ],
@@ -112,6 +119,32 @@ export function getEthereumProvider(): EthereumProvider | undefined {
   return activeWalletProvider ?? getInjectedProvider();
 }
 
+const EVM_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+
+/** Normalize + validate an EVM address. Throws a clear error if invalid. */
+export async function normalizeEvmAddress(
+  value: string | null | undefined,
+  label = 'Wallet address',
+): Promise<string> {
+  const raw = String(value ?? '').trim();
+  if (!EVM_ADDRESS_RE.test(raw)) {
+    throw new Error(
+      `${label} is missing or invalid (${raw ? raw.slice(0, 18) : 'empty'}). Reconnect your wallet and try again.`,
+    );
+  }
+  try {
+    const { getAddress } = await import('viem');
+    return getAddress(raw);
+  } catch {
+    // Still return lowercase hex if checksum fails — MetaMask accepts it.
+    return raw.toLowerCase();
+  }
+}
+
+export function isEvmAddressString(value: string | null | undefined) {
+  return EVM_ADDRESS_RE.test(String(value ?? '').trim());
+}
+
 export async function getActiveProviderAccount(provider: EthereumProvider) {
   const existingAccounts = await provider
     .request({
@@ -125,8 +158,12 @@ export async function getActiveProviderAccount(provider: EthereumProvider) {
           method: 'eth_requestAccounts',
         });
   const account = Array.isArray(accounts) ? String(accounts[0] ?? '').trim() : '';
-
-  return account || null;
+  if (!account) return null;
+  try {
+    return await normalizeEvmAddress(account, 'Connected wallet');
+  } catch {
+    return account;
+  }
 }
 
 /**
@@ -146,30 +183,130 @@ export async function resolvePayingAccount(provider: EthereumProvider): Promise<
     ? accounts.map((value) => String(value ?? '').trim()).filter(Boolean)
     : [];
   if (list.length === 0) {
-    throw new Error('No wallet account is selected. Open your wallet, choose the paying account, and try again.');
+    throw new Error(
+      'No wallet account is selected. Open your wallet, choose the paying account, and try again.',
+    );
   }
 
-  // Checksum when possible so eth_signTypedData_v4 matches the wallet's selected key.
-  try {
-    const { getAddress } = await import('viem');
-    return getAddress(list[0]);
-  } catch {
-    return list[0];
-  }
+  return normalizeEvmAddress(list[0], 'Paying wallet');
 }
 
 export function sameWalletAddress(left: string | null | undefined, right: string | null | undefined) {
   return Boolean(left && right && left.toLowerCase() === right.toLowerCase());
 }
 
+export type PaymentTypedData = {
+  domain: Record<string, unknown>;
+  types: Record<string, unknown>;
+  primaryType: string;
+  message: Record<string, unknown>;
+};
+
+/** Keep only EIP-712 fields MetaMask accepts for eth_signTypedData_v4. */
+export function sanitizePaymentTypedData(raw: Record<string, unknown>): PaymentTypedData {
+  const domain = (raw.domain && typeof raw.domain === 'object' ? raw.domain : {}) as Record<
+    string,
+    unknown
+  >;
+  const types = (raw.types && typeof raw.types === 'object' ? raw.types : {}) as Record<
+    string,
+    unknown
+  >;
+  const message = (raw.message && typeof raw.message === 'object' ? raw.message : {}) as Record<
+    string,
+    unknown
+  >;
+  const primaryType = String(raw.primaryType ?? 'TransferWithAuthorization');
+
+  // Drop EIP712Domain from types if present — MetaMask builds it from domain.
+  const { EIP712Domain: _ignored, ...safeTypes } = types as Record<string, unknown> & {
+    EIP712Domain?: unknown;
+  };
+
+  return {
+    domain: {
+      name: domain.name,
+      version: domain.version,
+      chainId:
+        typeof domain.chainId === 'string' || typeof domain.chainId === 'number'
+          ? Number(domain.chainId)
+          : domain.chainId,
+      verifyingContract: domain.verifyingContract,
+    },
+    types: safeTypes,
+    primaryType,
+    message: {
+      from: message.from,
+      to: message.to,
+      value: String(message.value ?? ''),
+      validAfter: String(message.validAfter ?? ''),
+      validBefore: String(message.validBefore ?? ''),
+      nonce: message.nonce,
+    },
+  };
+}
+
+/**
+ * Sign payment typed data. Uses lowercase address in the first param (MetaMask-safe)
+ * and validates from/to before calling the wallet.
+ */
+export async function signPaymentTypedData(
+  provider: EthereumProvider,
+  payer: string,
+  rawTypedData: Record<string, unknown>,
+): Promise<{ signature: string; typedData: PaymentTypedData; signAddress: string }> {
+  const typedData = sanitizePaymentTypedData(rawTypedData);
+  const signAddress = await normalizeEvmAddress(
+    String(typedData.message.from ?? payer),
+    'Payment signer (from)',
+  );
+  const payTo = await normalizeEvmAddress(String(typedData.message.to ?? ''), 'Creator payTo');
+
+  typedData.message.from = signAddress;
+  typedData.message.to = payTo;
+
+  if (!typedData.domain.verifyingContract || !isEvmAddressString(String(typedData.domain.verifyingContract))) {
+    throw new Error('Payment domain verifyingContract is missing. Refresh the receipt and try again.');
+  }
+  if (!typedData.message.nonce || !String(typedData.message.nonce).startsWith('0x')) {
+    throw new Error('Payment authorization nonce is missing. Refresh the receipt and try again.');
+  }
+  if (!typedData.message.value) {
+    throw new Error('Payment amount is missing. Refresh the receipt and try again.');
+  }
+
+  // MetaMask validates the first param strictly; lowercase hex is always accepted.
+  const accountParam = signAddress.toLowerCase();
+  const payload = JSON.stringify(typedData);
+
+  try {
+    const signature = String(
+      await provider.request({
+        method: 'eth_signTypedData_v4',
+        params: [accountParam, payload],
+      }),
+    );
+    if (!signature || signature === 'undefined' || signature === 'null') {
+      throw new Error('Wallet returned an empty payment signature.');
+    }
+    return { signature, typedData, signAddress };
+  } catch (error) {
+    const message = (error as Error)?.message || String(error);
+    if (/must provide an Ethereum address/i.test(message)) {
+      throw new Error(
+        `Wallet rejected the signer address ${maskAddress(signAddress)}. Open your wallet, select that account (or reconnect), then try Approve & Pay again.`,
+      );
+    }
+    if (/user rejected|denied|cancelled|canceled/i.test(message)) {
+      throw new Error('Payment signature was rejected in the wallet.');
+    }
+    throw error instanceof Error ? error : new Error(message);
+  }
+}
+
 /** Recover EIP-712 TransferWithAuthorization signer to catch wallet account mismatches early. */
 export async function recoverPaymentSignatureAddress(params: {
-  typedData: {
-    domain: Record<string, unknown>;
-    types: Record<string, unknown>;
-    primaryType: string;
-    message: Record<string, unknown>;
-  };
+  typedData: PaymentTypedData;
   signature: string;
 }): Promise<string | null> {
   try {
