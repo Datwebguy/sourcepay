@@ -26,6 +26,7 @@ import {
   deployContentRegistry,
   registerContentOnChain,
 } from './payments.mjs';
+import { selectCitationsWithAgent } from './agent-brain.mjs';
 
 loadEnv();
 
@@ -278,6 +279,9 @@ if (!runColumns.includes('access_token')) {
 if (!runColumns.includes('buyer_wallet')) {
   db.exec("ALTER TABLE research_runs ADD COLUMN buyer_wallet TEXT NOT NULL DEFAULT ''");
 }
+if (!runColumns.includes('agent_rationale')) {
+  db.exec("ALTER TABLE research_runs ADD COLUMN agent_rationale TEXT NOT NULL DEFAULT ''");
+}
 
 const selectedSourceColumns = db
   .prepare("PRAGMA table_info('selected_sources')")
@@ -289,6 +293,7 @@ for (const [column, definition] of [
   ['kind', "TEXT NOT NULL DEFAULT ''"],
   ['wallet', "TEXT NOT NULL DEFAULT ''"],
   ['content', "TEXT NOT NULL DEFAULT ''"],
+  ['agent_reason', "TEXT NOT NULL DEFAULT ''"],
 ]) {
   if (!selectedSourceColumns.includes(column)) {
     db.exec(`ALTER TABLE selected_sources ADD COLUMN ${column} ${definition}`);
@@ -435,8 +440,8 @@ const statements = {
       verified_at = datetime('now')
   `),
   insertRun: db.prepare(`
-    INSERT INTO research_runs (id, question, budget, total_spend, access_token, buyer_wallet)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO research_runs (id, question, budget, total_spend, access_token, buyer_wallet, agent_rationale)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `),
   insertSelectedSource: db.prepare(`
     INSERT INTO selected_sources (
@@ -447,9 +452,10 @@ const statements = {
       title,
       kind,
       wallet,
-      content
+      content,
+      agent_reason
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `),
   getRun: db.prepare(`
     SELECT
@@ -463,6 +469,7 @@ const statements = {
       network,
       access_token AS accessToken,
       buyer_wallet AS buyerWallet,
+      agent_rationale AS agentRationale,
       created_at AS createdAt
     FROM research_runs
     WHERE id = ?
@@ -479,6 +486,7 @@ const statements = {
       network,
       access_token AS accessToken,
       buyer_wallet AS buyerWallet,
+      agent_rationale AS agentRationale,
       created_at AS createdAt
     FROM research_runs
     WHERE id LIKE ? || '%'
@@ -496,6 +504,7 @@ const statements = {
       s.ownership_message AS ownershipMessage,
       ss.price,
       COALESCE(s.status, 'archived') AS status,
+      ss.agent_reason AS agentReason,
       ss.rank
     FROM selected_sources ss
     LEFT JOIN sources s ON s.id = ss.source_id
@@ -1034,6 +1043,7 @@ function normalizeSource(row) {
     mediumHandle: row.mediumHandle ?? null,
     status: row.status,
     createdAt: row.createdAt,
+    agentReason: row.agentReason ?? null,
   };
 
   return {
@@ -2082,6 +2092,7 @@ function normalizeRun(row) {
     network: normalizeNetworkName(row.network),
     accessToken: row.accessToken ?? null,
     buyerWallet: row.buyerWallet ?? '',
+    agentRationale: row.agentRationale ?? '',
     createdAt: row.createdAt,
   };
 }
@@ -2471,7 +2482,7 @@ function verifyReceiptProof(proof) {
   };
 }
 
-function routeSources({ question, budget, kinds, buyerWallet }) {
+async function routeSources({ question, budget, kinds, buyerWallet }) {
   const normalizedQuestion = String(question ?? '').trim();
   const normalizedBudget = Number(budget);
   const normalizedBuyerWallet = String(buyerWallet ?? '').trim();
@@ -2553,10 +2564,44 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
       return left.price - right.price;
     });
 
-  for (const source of eligible) {
-    if (totalSpend + source.price > activeBudget) continue;
-    totalSpend += source.price;
-    selected.push(source);
+  if (eligible.length === 0) {
+    return {
+      error:
+        'No eligible creator source matched this request. Register matching sources before creating a receipt.',
+    };
+  }
+
+  let agentRationale = '';
+  let agentError = null;
+  try {
+    const agentResult = await selectCitationsWithAgent({
+      objective: normalizedQuestion,
+      budget: activeBudget,
+      candidates: eligible,
+    });
+    agentRationale = agentResult.rationale;
+    for (const source of eligible) {
+      const decision = agentResult.decisions.get(source.id);
+      if (!decision || decision.worthCiting) {
+        // No decision returned for this candidate (beyond the cap) falls back to the
+        // keyword pre-filter's own judgment rather than silently dropping it.
+        source.agentReason = decision?.reason ?? '';
+        if (totalSpend + source.price > activeBudget) continue;
+        totalSpend += source.price;
+        selected.push(source);
+      }
+    }
+  } catch (error) {
+    agentError = error;
+  }
+
+  if (agentError) {
+    logError('route.agent_reasoning_failed', agentError, {
+      buyerWallet: maskAddress(normalizedBuyerWallet),
+    });
+    return {
+      error: `Agent reasoning is unavailable: ${agentError.message}`,
+    };
   }
 
   if (policy && normalizedBuyerWallet && selected.length > 0) {
@@ -2571,8 +2616,9 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
 
   if (selected.length === 0) {
     return {
-      error:
-        'No eligible creator source matched this request. Register matching sources before creating a receipt.',
+      error: agentRationale
+        ? `The agent found matching sources but judged none of them worth citing for this objective: ${agentRationale}`
+        : 'No eligible creator source matched this request. Register matching sources before creating a receipt.',
     };
   }
 
@@ -2587,6 +2633,7 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
       totalSpend,
       accessToken,
       normalizedBuyerWallet,
+      agentRationale,
     );
     selected.forEach((source, index) => {
       statements.insertSelectedSource.run(
@@ -2598,6 +2645,7 @@ function routeSources({ question, budget, kinds, buyerWallet }) {
         source.kind,
         source.wallet,
         source.content,
+        source.agentReason ?? '',
       );
     });
     db.exec('COMMIT');
@@ -3418,7 +3466,7 @@ async function handleRequest(request, response) {
     if (request.method === 'POST' && url.pathname === '/api/route') {
       if (applyRateLimit(request, response, 'route')) return;
       const body = await readBody(request);
-      const result = routeSources(body);
+      const result = await routeSources(body);
       if (result.error) {
         logEvent('warn', 'route.rejected', {
           ...requestLogFields(request, url),

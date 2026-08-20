@@ -768,6 +768,17 @@ export function PlatformPage({
                     </div>
                   </div>
 
+                  {activeReceipt?.agentRationale && (
+                    <div className="mx-4 mt-4 rounded-[8px] border border-[#C9A6FF]/30 bg-[#C9A6FF]/10 px-4 py-3">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-[#C9A6FF]">
+                        Agent rationale
+                      </p>
+                      <p className="mt-1 text-sm font-medium text-white/80">
+                        {activeReceipt.agentRationale}
+                      </p>
+                    </div>
+                  )}
+
                   <div className="grid gap-4 p-4 xl:grid-cols-[minmax(0,1fr)_300px]">
                     <div className="overflow-hidden rounded-[8px] border border-white/10 bg-black/18">
                       <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
@@ -834,6 +845,11 @@ export function PlatformPage({
                                   <p className="text-xs text-white/42">
                                     rank {source.rank ?? index + 1} · {source.kind}
                                   </p>
+                                  {source.agentReason && (
+                                    <p className="mt-1 text-xs italic text-[#C9A6FF]/80">
+                                      {source.agentReason}
+                                    </p>
+                                  )}
                                   <p className="mt-1 font-mono text-[11px] text-white/34">
                                     {shortFingerprint(source.fingerprint)}
                                   </p>

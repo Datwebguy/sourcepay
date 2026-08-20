@@ -18,7 +18,7 @@ SourcePay now separates public marketplace data from private wallet-owned worksp
 ## What It Does
 
 - Registers creator-owned sources with payout wallets, citation pricing, content fingerprints, and wallet-signed ownership proof.
-- Routes buyer requests to relevant registered sources within a selected USDC budget.
+- Routes buyer requests to relevant registered sources within a selected USDC budget. A keyword pre-filter narrows candidates, then an LLM call (`server/agent-brain.mjs`) decides which of those candidates are actually worth citing for the specific objective and returns a rationale — routing is not pure keyword matching. See "Agent Citation Reasoning" below.
 - Stores the connected buyer wallet on newly routed receipts so buyers can recover their own unpaid receipts later.
 - Generates receipt pages with selected sources, fingerprints, payout amounts, payment status, and proof actions.
 - Protects private unpaid receipts with access tokens.
@@ -32,6 +32,7 @@ SourcePay now separates public marketplace data from private wallet-owned worksp
 - React, TypeScript, Vite, Tailwind CSS
 - Node HTTP server
 - SQLite
+- OpenAI (citation routing decisions)
 - Direct on-chain USDC settlement (web app), Circle x402 Gateway batching (CLI autonomous agent)
 - Arc Testnet
 - viem
@@ -86,6 +87,8 @@ SOURCEPAY_WALLETCONNECT_PROJECT_ID=
 CONTENT_REGISTRY_ADDRESS=
 SOURCEPAY_AUTO_DEPLOY_CONTENT_REGISTRY=0
 AGENT_PRIVATE_KEY=
+OPENAI_API_KEY=
+OPENAI_MODEL=
 ```
 
 Optional rate-limit overrides:
@@ -195,6 +198,15 @@ On a receipt page, users can:
 - Download receipt proof.
 - Verify receipt proof against stored SourcePay data.
 - Review payment status and payment history.
+
+## Agent Citation Reasoning
+
+Routing a request runs in two stages:
+
+1. **Keyword pre-filter** (`server/index.mjs`, `routeSources`): tokenizes the objective, scores every eligible source by keyword/phrase overlap and trust signals, and narrows to candidates above a relevance threshold. This stage is cheap and deterministic — it's a candidate filter, not the citation decision.
+2. **Agent decision** (`server/agent-brain.mjs`, `selectCitationsWithAgent`): the pre-filtered candidates (title, kind, price, content excerpt), the objective, and the budget are sent to OpenAI with a strict JSON schema. The model returns, for every candidate, whether it's actually worth citing and why, plus an overall rationale for the selection. Only candidates the model marks `worthCiting` are added to the receipt (still capped by the buyer's budget in code). The rationale and per-source reasons are stored on the run and returned on the receipt.
+
+`/api/route` requires `OPENAI_API_KEY` and fails loudly (no keyword-only fallback) if it's missing or the call errors — a broken agent call should surface as an error, not silently degrade to string matching. See `.env.example` for `OPENAI_API_KEY` / `OPENAI_MODEL`.
 
 ## Autonomous Agent Payments
 

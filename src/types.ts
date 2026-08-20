@@ -45,6 +45,7 @@ export type RegistrySource = {
   status: 'registered' | 'archived';
   createdAt?: string;
   rank?: number;
+  agentReason?: string | null;
 };
 
 export type SourceDraft = {
@@ -68,6 +69,7 @@ export type Receipt = {
   readyForSettlement?: boolean;
   accessToken?: string | null;
   buyerWallet?: string;
+  agentRationale?: string;
   createdAt: string;
   sources: RegistrySource[];
   paymentAttempts?: PaymentAttempt[];
