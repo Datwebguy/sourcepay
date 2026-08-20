@@ -1,6 +1,6 @@
 # SourcePay
 
-SourcePay is a payment router for AI citations on Arc. Creators register wallet-signed source material, buyers route research requests across registered sources, SourcePay generates payable receipts, and creators are paid in USDC through Circle x402 batching on Arc.
+SourcePay is a payment router for AI citations on Arc. Creators register wallet-signed source material, buyers route research requests across registered sources, SourcePay generates payable receipts, and creators are paid in Arc Testnet USDC. The web app settles payments as direct on-chain USDC transfers verified against the Arc Testnet ledger; the standalone CLI autonomous agent settles through Circle's x402 Gateway batching using signed EIP-3009 authorizations.
 
 Live app: `https://sourcepay.fly.dev/`
 
@@ -13,7 +13,7 @@ SourcePay now separates public marketplace data from private wallet-owned worksp
 - Private buyer receipts: unpaid receipts recoverable only by the buyer wallet that created them, or by the private access-token receipt URL.
 - Public receipts: only paid or settled receipts are listed publicly.
 - Receipt proof: receipt proof can be downloaded and verified against stored route data.
-- Payments: payment requirements are generated for Arc Testnet USDC using Circle x402 batching.
+- Payments: the web app pays creators with direct Arc Testnet USDC transfers (buyer wallet or agent wallet), verified against on-chain transaction receipts. The standalone CLI autonomous agent (`scripts/agent-runner.mjs`) instead settles through Circle's x402 Gateway batching facilitator using signed EIP-3009 authorizations.
 
 ## What It Does
 
@@ -32,7 +32,7 @@ SourcePay now separates public marketplace data from private wallet-owned worksp
 - React, TypeScript, Vite, Tailwind CSS
 - Node HTTP server
 - SQLite
-- Circle x402 batching
+- Direct on-chain USDC settlement (web app), Circle x402 Gateway batching (CLI autonomous agent)
 - Arc Testnet
 - viem
 - Fly.io
@@ -304,13 +304,13 @@ Run these checks on `https://sourcepay.fly.dev/` after each production deploy:
 20. Confirm earnings load only after signing.
 21. Open the receipt page.
 22. Confirm receipt proof downloads and verifies.
-23. Try the full x402 payment with funded Arc Testnet USDC.
+23. Try the full buyer-usdc payment with funded Arc Testnet USDC (direct on-chain transfer, verified against the transaction receipt).
 24. Confirm payment status updates and payment history is recorded.
 25. Confirm Fly logs show structured events without raw signatures or access tokens.
 
 ## Known Manual Verification Still Required
 
-- Real funded-wallet x402 payment on Arc Testnet.
+- Real funded-wallet direct USDC payment on Arc Testnet (web app path) and a real funded-wallet x402 Gateway payment via the CLI autonomous agent.
 - Circle testnet USDC faucet availability for the buyer wallet.
 - Wallet popup behavior across the wallet extension used in the demo.
 - Two-browser, two-wallet isolation test.
