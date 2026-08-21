@@ -1444,7 +1444,7 @@ export function PlatformPage({
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">2</span>
                       <div>
                         <p className="font-semibold text-white">Route citation request</p>
-                        <p className="text-xs text-white/48 mt-0.5">Go to the Requests tab, enter your research question and budget (USDC), and click Route Request. An agent judges which matched sources are actually worth citing for your objective, not just keyword overlap, and shows its rationale on the receipt.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Go to the Requests tab, enter your research question and budget (USDC), and click Route Request. An agent evaluates the matched sources for relevance to your objective and shows its rationale on the receipt.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
@@ -1520,31 +1520,30 @@ export function PlatformPage({
                     <h3 className="text-base font-bold text-white">Autonomous Agent (CLI) Guide</h3>
                   </div>
                   <p className="mb-4 text-xs leading-relaxed text-white/55">
-                    Run a fully autonomous buy-and-pay flow from the command line: an agent wallet routes a request, gets an agent citation decision, signs EIP-3009 authorizations, and settles through Circle&apos;s x402 Gateway.
+                    A fully autonomous buy-and-pay flow from the command line: the agent wallet routes a request, receives an agent citation decision, signs EIP-3009 authorizations, and settles through Circle&apos;s x402 Gateway.
                   </p>
                   <ol className="space-y-4 text-sm text-white/80">
                     <li className="flex gap-3">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">1</span>
                       <div>
-                        <p className="font-semibold text-white">Get a wallet funded with Arc Testnet USDC</p>
-                        <p className="text-xs text-white/48 mt-0.5">
-                          Any EVM private key works — this is not Canteen-specific. If you already use the Canteen CLI, <span className="font-mono">arc-canteen wallet</span> gives you one pre-funded. Otherwise, generate any wallet and fund it from <span className="font-mono">faucet.circle.com</span> (select Arc Testnet).
-                        </p>
+                        <p className="font-semibold text-white">Fund an agent wallet</p>
+                        <p className="text-xs text-white/48 mt-0.5 font-mono">arc-canteen wallet</p>
+                        <p className="text-xs text-white/48 mt-0.5">Provisions an Arc Testnet wallet pre-funded with USDC.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">2</span>
                       <div>
-                        <p className="font-semibold text-white">Set that wallet&apos;s private key as an env var</p>
+                        <p className="font-semibold text-white">Set the agent wallet key</p>
                         <p className="text-xs text-white/48 mt-0.5 font-mono">$env:AGENT_PRIVATE_KEY=&quot;0x...&quot;</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">3</span>
                       <div>
-                        <p className="font-semibold text-white">Fund the Gateway Wallet contract (one time)</p>
+                        <p className="font-semibold text-white">Fund the Gateway Wallet contract</p>
                         <p className="text-xs text-white/48 mt-0.5">
-                          Holding USDC in the wallet is not enough — Circle&apos;s Gateway settles from a separate Gateway-internal balance, funded by an onchain deposit.
+                          One-time onchain deposit. Circle&apos;s Gateway settles from this deposited balance, not the wallet&apos;s raw USDC balance.
                         </p>
                         <p className="text-xs text-white/48 mt-0.5 font-mono">node scripts/fund-gateway.mjs 1</p>
                       </div>
@@ -1554,7 +1553,7 @@ export function PlatformPage({
                       <div>
                         <p className="font-semibold text-white">Run the autonomous agent</p>
                         <p className="text-xs text-white/48 mt-0.5 font-mono">node scripts/agent-runner.mjs &quot;your research objective&quot; 1</p>
-                        <p className="text-xs text-white/48 mt-0.5">The second argument is the max USDC budget. Add <span className="font-mono">SOURCEPAY_URL</span> to target a deployed instance instead of localhost.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Second argument is the max USDC budget. Set <span className="font-mono">SOURCEPAY_URL</span> to target a deployed instance instead of localhost.</p>
                       </div>
                     </li>
                   </ol>
