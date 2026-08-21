@@ -1444,7 +1444,7 @@ export function PlatformPage({
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">2</span>
                       <div>
                         <p className="font-semibold text-white">Route citation request</p>
-                        <p className="text-xs text-white/48 mt-0.5">Go to the Requests tab, enter your research question and budget (USDC), and click Route Request.</p>
+                        <p className="text-xs text-white/48 mt-0.5">Go to the Requests tab, enter your research question and budget (USDC), and click Route Request. An agent judges which matched sources are actually worth citing for your objective, not just keyword overlap, and shows its rationale on the receipt.</p>
                       </div>
                     </li>
                     <li className="flex gap-3">
@@ -1510,6 +1510,45 @@ export function PlatformPage({
                   <div className="mt-5 rounded-[8px] bg-white/[0.03] p-3 text-xs leading-relaxed text-white/45 border border-white/5">
                     Note: Payouts are made instantly using TransferWithAuthorization. Funds arrive in your wallet as soon as the batch settles.
                   </div>
+                </section>
+
+                <section className="rounded-[8px] border border-white/10 bg-[#111]/90 p-5 md:col-span-2">
+                  <div className="mb-4 flex items-center gap-2 border-b border-white/10 pb-3">
+                    <div className="rounded-full bg-[#C9A6FF]/14 p-1.5 text-[#C9A6FF]">
+                      <Activity size={18} />
+                    </div>
+                    <h3 className="text-base font-bold text-white">Autonomous Agent (CLI) Guide</h3>
+                  </div>
+                  <p className="mb-4 text-xs leading-relaxed text-white/55">
+                    Run a fully autonomous buy-and-pay flow from the command line: an agent wallet routes a request, gets an agent citation decision, signs EIP-3009 authorizations, and settles through Circle&apos;s x402 Gateway.
+                  </p>
+                  <ol className="space-y-4 text-sm text-white/80">
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">1</span>
+                      <div>
+                        <p className="font-semibold text-white">Set your agent wallet key</p>
+                        <p className="text-xs text-white/48 mt-0.5 font-mono">$env:AGENT_PRIVATE_KEY=&quot;0x...&quot;</p>
+                      </div>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">2</span>
+                      <div>
+                        <p className="font-semibold text-white">Fund the Gateway Wallet contract (one time)</p>
+                        <p className="text-xs text-white/48 mt-0.5">
+                          Holding USDC in the wallet is not enough — Circle&apos;s Gateway settles from a separate Gateway-internal balance.
+                        </p>
+                        <p className="text-xs text-white/48 mt-0.5 font-mono">node scripts/fund-gateway.mjs 1</p>
+                      </div>
+                    </li>
+                    <li className="flex gap-3">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-bold text-white/70">3</span>
+                      <div>
+                        <p className="font-semibold text-white">Run the autonomous agent</p>
+                        <p className="text-xs text-white/48 mt-0.5 font-mono">node scripts/agent-runner.mjs &quot;your research objective&quot; 1</p>
+                        <p className="text-xs text-white/48 mt-0.5">The second argument is the max USDC budget. Add <span className="font-mono">SOURCEPAY_URL</span> to target a deployed instance instead of localhost.</p>
+                      </div>
+                    </li>
+                  </ol>
                 </section>
               </div>
             )}
