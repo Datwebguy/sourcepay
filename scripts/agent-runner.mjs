@@ -119,7 +119,11 @@ async function run() {
     console.log(`\n[Autonomous Agent] Research completed! Citation records settled on Arc Testnet.`);
   } catch (err) {
     console.error(`\n[Autonomous Agent] Flow failed:`, err.message);
-    process.exit(1);
+    // Set the exit code and let the event loop drain naturally instead of
+    // process.exit(1) — forcing an immediate exit while a fetch() keep-alive
+    // socket handle is still being torn down crashes Node on Windows with
+    // "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)".
+    process.exitCode = 1;
   }
 }
 
