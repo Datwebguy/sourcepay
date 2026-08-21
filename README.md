@@ -237,6 +237,13 @@ For the agent to pay creators on Arc Testnet, fund the agent's address with Arc 
 - Select **Arc Testnet** (Chain ID: `5042002`)
 - Input the Agent Wallet address shown when launching the server or running the CLI script.
 
+**Holding USDC in the wallet is not enough for x402 Gateway settlement.** Circle's Gateway draws from a separate Gateway-internal balance, funded by a one-time onchain deposit into the Gateway Wallet contract (`approve()` then `deposit()`) — not just an EOA balance. Without this deposit, `agent-runner.mjs` reaches Circle's real Gateway API and gets a genuine `insufficient_balance` rejection. Run this once per wallet before expecting the CLI agent to settle:
+
+```bash
+$env:AGENT_PRIVATE_KEY="0x..." # Windows Powershell
+node scripts/fund-gateway.mjs 1   # deposits 1 USDC into the Gateway Wallet contract
+```
+
 ## Validation
 
 ```bash
